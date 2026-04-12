@@ -1,0 +1,179 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Oswald:wght@500;600;700&family=Playfair+Display:ital,wght@0,400..900;1,400..900&display=swap');
+
+:root {
+  --purple: #6a0dad;
+  --bright-purple: #9d00ff;
+  --magenta: #d90082;
+  --gold: #ffbe0b;
+  --deep-gold: #b8860b;
+  --dark-bg: #0a0a0a;
+  --surface: #121212;
+  --border: rgba(255, 255, 255, 0.08);
+}
+
+body {
+  font-family: 'Outfit', sans-serif;
+  color: #fff;
+  background-color: var(--dark-bg);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.01em;
+}
+
+h1, h2, h3, h4, .brand-title {
+  font-family: 'Oswald', sans-serif;
+  text-transform: uppercase;
+  letter-spacing: -0.02em;
+}
+
+.text-playfair {
+  font-family: 'Playfair Display', serif;
+  text-transform: none;
+  font-style: italic;
+}
+
+/* Utilities */
+.tracking-widest {
+  letter-spacing: 0.3em;
+}
+
+.text-gold {
+  color: var(--gold) !important;
+}
+
+.text-gradient {
+  background: linear-gradient(135deg, var(--bright-purple) 0%, var(--magenta) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Advanced Glassmorphism */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
+  transition: border 0.3s ease;
+}
+
+.glass-panel:hover {
+  border: 1px solid rgba(157, 0, 255, 0.3);
+}
+
+.glass-btn {
+  background: rgba(255, 255, 255, 0.05) !important;
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  color: #fff !important;
+  transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+  overflow: hidden;
+  position: relative;
+}
+
+.glass-btn::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -100%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+  transition: 0.5s;
+}
+
+.glass-btn:hover::before {
+  left: 100%;
+}
+
+.glass-btn:hover {
+  background: rgba(255, 255, 255, 0.12) !important;
+  border-color: var(--bright-purple) !important;
+  transform: translateY(-3px);
+  box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+}
+
+/* Premium Buttons */
+.btn-gold {
+  background: var(--gold);
+  color: #000;
+  border: none;
+  font-weight: 700;
+  padding: 1rem 2.5rem;
+  border-radius: 100px;
+  position: relative;
+  z-index: 1;
+  transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+  box-shadow: 0 10px 20px rgba(255, 190, 11, 0.2);
+}
+
+.btn-purple {
+  background: linear-gradient(135deg, var(--purple), var(--magenta));
+  color: #fff;
+  border: none;
+  font-weight: 700;
+  padding: 1rem 2.5rem;
+  border-radius: 100px;
+  transition: all 0.4s cubic-bezier(0.23, 1, 0.32, 1);
+  box-shadow: 0 10px 20px rgba(106, 13, 173, 0.3);
+}
+
+.btn-purple:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 15px 30px rgba(106, 13, 173, 0.5);
+  filter: brightness(1.2);
+}
+
+/* Mesh Gradients */
+.mesh-glow {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  background: 
+    radial-gradient(at 0% 0%, rgba(106, 13, 173, 0.2) 0px, transparent 50%),
+    radial-gradient(at 100% 0%, rgba(217, 0, 130, 0.15) 0px, transparent 50%),
+    radial-gradient(at 100% 100%, rgba(106, 13, 173, 0.15) 0px, transparent 50%),
+    radial-gradient(at 0% 100%, rgba(217, 0, 130, 0.2) 0px, transparent 50%);
+  filter: blur(80px);
+  z-index: -1;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--dark-bg);
+}
+::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--gold);
+}
+
+/* Navigation Improvements */
+.nav-link {
+  transition: all 0.3s ease !important;
+}
+
+.nav-link:hover {
+  opacity: 1 !important;
+  color: var(--gold) !important;
+}
+
+.nav-link.active {
+  color: var(--gold) !important;
+  opacity: 1 !important;
+}
+
+/* Mask for smooth reveals */
+.reveal-mask {
+  mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
+}
+
+.object-fit-cover {
+  object-fit: cover;
+}
+
