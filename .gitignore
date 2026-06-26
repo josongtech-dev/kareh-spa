@@ -1,0 +1,24 @@
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Backend local secrets/config
+php_backend/config/local.php
+php_backend/config/db.local.php
+
+# Runtime files
+php_backend/uploads/tmp/
+php_backend/logs/
+
+# Node/build artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/dist-ssr/
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

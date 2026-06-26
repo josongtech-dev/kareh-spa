@@ -1,12 +1,57 @@
-import React from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { motion, type Variants } from 'framer-motion';
-import { FaArrowRight, FaPlay, FaStar, FaInstagram, FaFacebookF, FaTwitter } from 'react-icons/fa';
-import heroImg from '../assets/hero.png';
-import barberImg from '../assets/barbershop.png';
-import salonImg from '../assets/salon.png';
+import { FaArrowRight, FaPlay, FaStar, FaInstagram } from 'react-icons/fa';
+import hairCutVideo from '../assets/hair_cut.mp4';
+import spaVideo from '../assets/spa.mp4';
+import manicureVideo from '../assets/manicure.mp4';
+import heroPoster from '../assets/spa.jpg';
+import massageImg from '../assets/massage.jpg';
+import ctaImg from '../assets/spa2.jpg';
+import braid4Img from '../assets/braid4.jpeg';
+import shave3Img from '../assets/shave3.jpeg';
+import nail5Img from '../assets/nail5.jpeg';
+import braid6Img from '../assets/braid6.jpeg';
+import shave4Img from '../assets/shave4.jpeg';
+import nailVideo from '../assets/nailvid.mp4';
 
 const HomePage: React.FC = () => {
+  const heroVideos = useMemo(() => [hairCutVideo, spaVideo, manicureVideo], []);
+  const [heroVideoIndex, setHeroVideoIndex] = useState(0);
+  const [prefersReducedMotion, setPrefersReducedMotion] = useState(false);
+  const [isLowDataMode, setIsLowDataMode] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia('(prefers-reduced-motion: reduce)');
+    const updateMotionPreference = () => setPrefersReducedMotion(mediaQuery.matches);
+    updateMotionPreference();
+
+    if (typeof mediaQuery.addEventListener === 'function') {
+      mediaQuery.addEventListener('change', updateMotionPreference);
+    } else {
+      mediaQuery.addListener(updateMotionPreference);
+    }
+
+    const connection = (navigator as Navigator & {
+      connection?: { saveData?: boolean; effectiveType?: string };
+    }).connection as
+      | { saveData?: boolean; effectiveType?: string }
+      | undefined;
+    if (connection) {
+      setIsLowDataMode(Boolean(connection.saveData) || connection.effectiveType === '2g');
+    }
+
+    return () => {
+      if (typeof mediaQuery.removeEventListener === 'function') {
+        mediaQuery.removeEventListener('change', updateMotionPreference);
+      } else {
+        mediaQuery.removeListener(updateMotionPreference);
+      }
+    };
+  }, []);
+
+  const shouldAutoplayVideos = !prefersReducedMotion && !isLowDataMode;
+
   // Motion Variants
   const fadeUp: Variants = {
     hidden: { opacity: 0, y: 60 },
@@ -30,16 +75,27 @@ const HomePage: React.FC = () => {
     <div className="home-page bg-black text-white">
       
       {/* HERO SECTION - REFINED */}
-      <section className="position-relative d-flex align-items-center justify-content-center py-5" style={{ minHeight: '100vh', overflow: 'hidden' }}>
+      <section className="home-hero-section position-relative d-flex align-items-center justify-content-center py-5" style={{ overflow: 'hidden' }}>
         <motion.div 
           className="position-absolute w-100 h-100 top-0 left-0" 
           initial={{ scale: 1.15, opacity: 0.2 }}
-          animate={{ scale: 1, opacity: 0.4 }}
+          animate={{ scale: 1, opacity: 0.25 }}
           transition={{ duration: 3, ease: "easeOut" }}
           style={{ zIndex: 0 }}
         >
-          <img src={heroImg} alt="Hero" className="w-100 h-100 object-fit-cover" />
-          <div className="position-absolute w-100 h-100 top-0 left-0" style={{ background: 'radial-gradient(circle at center, transparent 0%, rgba(0,0,0,0.8) 100%)' }}></div>
+          <video
+            className="w-100 h-100 object-fit-cover"
+            autoPlay={shouldAutoplayVideos}
+            muted
+            playsInline
+            preload={shouldAutoplayVideos ? 'metadata' : 'none'}
+            poster={heroPoster}
+            key={heroVideos[heroVideoIndex]}
+            onEnded={shouldAutoplayVideos ? () => setHeroVideoIndex((prev) => (prev + 1) % heroVideos.length) : undefined}
+          >
+            <source src={heroVideos[heroVideoIndex]} type="video/mp4" />
+          </video>
+          <div className="position-absolute w-100 h-100 top-0 left-0" style={{ background: 'radial-gradient(circle at center, rgba(0,0,0,0.05) 0%, rgba(0,0,0,0.55) 100%)' }}></div>
         </motion.div>
 
         <div className="mesh-glow opacity-50"></div>
@@ -52,7 +108,7 @@ const HomePage: React.FC = () => {
             </motion.div>
 
             <motion.div variants={fadeUp} className="position-relative d-inline-block mb-4">
-              <h1 className="m-0 fw-bold display-1 lh-1" style={{ fontSize: 'clamp(4rem, 12vw, 10rem)' }}>
+              <h1 className="m-0 fw-bold display-1 lh-1 hero-title-glow" style={{ fontSize: 'clamp(4rem, 12vw, 10rem)' }}>
                 KAREH&apos;S <span className="text-playfair fw-light">Spa</span>
               </h1>
               <div className="position-absolute w-100 bg-purple opacity-25" style={{ height: '30%', bottom: '10%', zIndex: -1, filter: 'blur(30px)' }}></div>
@@ -64,7 +120,7 @@ const HomePage: React.FC = () => {
 
             <motion.div variants={fadeUp} className="d-flex flex-wrap justify-content-center gap-4 align-items-center mb-5">
               <Link to="/booking" className="btn btn-purple px-5 py-3">
-                SECURE APPOINTMENT <FaArrowRight className="ms-2" />
+                SCHEDULE YOUR VISIT <FaArrowRight className="ms-2" />
               </Link>
               <button className="btn btn-link glass-btn rounded-circle d-flex align-items-center justify-content-center" style={{ width: '60px', height: '60px' }}>
                 <FaPlay className="text-white ms-1" />
@@ -121,7 +177,7 @@ const HomePage: React.FC = () => {
                 className="position-relative"
               >
                 <div className="position-absolute w-100 h-100 border border-warning translate-middle-x translate-middle-y top-50 start-50 opacity-25" style={{ borderRadius: '40% 60% 70% 30% / 40% 50% 60% 50%', zIndex: -1, width: '110%', height: '110%' }}></div>
-                <img src={salonImg} alt="Experience" className="w-100 rounded-5 shadow-lg object-fit-cover" style={{ height: '500px' }} />
+                <img src={braid6Img} alt="Experience" loading="lazy" decoding="async" className="w-100 rounded-5 shadow-lg object-fit-cover home-editorial-image" style={{ height: '500px' }} />
                 <div className="position-absolute bottom-0 start-0 glass-panel p-4 m-4 rounded-4 shadow-lg border-start border-warning border-4">
                   <div className="d-flex align-items-center gap-2 mb-1">
                     {[1,2,3,4,5].map(i => <FaStar key={i} className="text-gold" style={{ fontSize: '12px' }} />)}
@@ -129,6 +185,32 @@ const HomePage: React.FC = () => {
                   <p className="m-0 fw-bold small Oswald">OVER 1,000+ HAPPY CLIENTS</p>
                 </div>
               </motion.div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section className="py-5" style={{ background: '#0b0b0b' }}>
+        <div className="container py-3">
+          <motion.div initial="hidden" whileInView="visible" viewport={{ once: true }} variants={fadeUp} className="text-center mb-5">
+            <span className="text-gold text-uppercase tracking-widest border-bottom border-warning border-opacity-25 pb-2 mb-4 d-inline-block">Exclusive Experience</span>
+            <h2 className="display-4 fw-bold Oswald mb-3">Private Comfort, <span className="text-playfair italic fw-normal text-capitalize">Premium Care</span></h2>
+            <p className="lead opacity-75 mx-auto Outfit fw-light" style={{ maxWidth: '760px', lineHeight: '1.8' }}>
+              Enjoy our Couple Massage Rooms for shared wellness sessions and our Private Chamber service where you receive treatment in your own uninterrupted room.
+            </p>
+          </motion.div>
+          <div className="row g-4">
+            <div className="col-md-6">
+              <div className="glass-panel p-5 rounded-5 h-100 border border-white border-opacity-10">
+                <h4 className="Oswald text-gold h3 mb-3">Couple Massage Rooms</h4>
+                <p className="Outfit opacity-75 mb-0">A calming shared room designed for partners and friends who want to unwind together while receiving synchronized premium massage care.</p>
+              </div>
+            </div>
+            <div className="col-md-6">
+              <div className="glass-panel p-5 rounded-5 h-100 border border-white border-opacity-10">
+                <h4 className="Oswald text-gold h3 mb-3">Private Chamber</h4>
+                <p className="Outfit opacity-75 mb-0">A fully private service room for clients who prefer exclusivity, peace, and focused one-on-one attention without interruptions.</p>
+              </div>
             </div>
           </div>
         </div>
@@ -149,18 +231,18 @@ const HomePage: React.FC = () => {
             className="row g-4 justify-content-center"
           >
             {[
-              { img: barberImg, title: "Modern Barbering", desc: "Precision Cuts & Shaves", services: ["Executive Shave", "Beard Sculpting", "Kids Shave"] },
-              { img: salonImg, title: "Luxe Hair & Salon", desc: "Braiding & Expert Styling", services: ["Braiding", "Weaving", "Professional Dye"] },
-              { img: heroImg, title: "Spa & Wellness", desc: "Rejuvenate Your Spirit", services: ["Body Massage", "Body Waxing", "Facials & Makeup"] },
-              { img: salonImg, title: "Nail Artistry", desc: "Total Glow for Your Hands", services: ["Gel, Tips & Acrylic", "Manicure", "Luxury Pedicure"] }
+              { img: shave3Img, title: "Modern Barbering", desc: "Precision Cuts & Shaves", services: ["Executive Shave", "Beard Sculpting", "Kids Shave"] },
+              { img: braid4Img, title: "Luxe Hair & Salon", desc: "Braiding & Expert Styling", services: ["Braiding", "Weaving", "Professional Dye"] },
+              { img: massageImg, title: "Spa & Wellness", desc: "Rejuvenate Your Spirit", services: ["Body Massage", "Body Waxing", "Facials & Makeup"] },
+              { img: nail5Img, title: "Nail Artistry", desc: "Total Glow for Your Hands", services: ["Gel, Tips & Acrylic", "Manicure", "Luxury Pedicure"] }
             ].map((card, idx) => (
               <div className="col-12 col-md-6 col-lg-3" key={idx}>
                 <motion.div 
                   variants={imageReveal} 
-                  className="position-relative overflow-hidden group rounded-5" 
+                  className="position-relative overflow-hidden group rounded-5 premium-card-hover" 
                   style={{ height: '500px', border: '1px solid rgba(255,255,255,0.05)' }}
                 >
-                  <img src={card.img} alt={card.title} className="w-100 h-100 object-fit-cover transition-all duration-700 group-hover-scale-110" style={{ transition: 'transform 1.5s cubic-bezier(0.19, 1, 0.22, 1)' }} />
+                  <img src={card.img} alt={card.title} loading="lazy" decoding="async" className="w-100 h-100 object-fit-cover transition-all duration-700 group-hover-scale-110" style={{ transition: 'transform 1.5s cubic-bezier(0.19, 1, 0.22, 1)' }} />
                   <div className="position-absolute inset-0 top-0 left-0 w-100 h-100" style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.2) 50%, transparent 100%)' }}></div>
                   
                   <div className="position-absolute bottom-0 w-100 p-4 text-start">
@@ -178,9 +260,96 @@ const HomePage: React.FC = () => {
         </div>
       </section>
 
+      {/* THE KAREH EDIT & TESTIMONIALS */}
+      <section className="py-5 bg-black position-relative overflow-hidden">
+        <div className="container py-5">
+            <motion.div initial="hidden" whileInView="visible" viewport={{ once: true }} variants={fadeUp} className="text-center mb-5">
+              <span className="text-gold text-uppercase tracking-widest border-bottom border-warning border-opacity-25 pb-2 mb-4 d-inline-block">Testimonials & Social</span>
+              <h2 className="display-4 fw-bold mb-3 Oswald">THE <span className="text-playfair italic fw-normal text-capitalize">Kareh</span> EDIT</h2>
+              <p className="lead opacity-75 mx-auto Outfit fw-light" style={{ maxWidth: '600px', lineHeight: '1.8' }}>
+                Stories of transformation, whispered by our clients and showcased in our sanctuary. Discover our latest insights into the world of wellness.
+              </p>
+            </motion.div>
+            
+            <div className="row g-5 align-items-center">
+               <div className="col-lg-6">
+                 <motion.div initial="hidden" whileInView="visible" viewport={{ once: true }} variants={fadeUp} className="glass-panel p-5 rounded-5 border-start border-warning border-4 position-relative h-100 d-flex flex-column justify-content-center">
+                    <FaStar className="text-gold position-absolute opacity-25" style={{ fontSize: '120px', top: '-30px', left: '-30px', zIndex: 0 }} />
+                    <div className="position-relative" style={{ zIndex: 1 }}>
+                       <div className="d-flex mb-4 gap-1">
+                         {[1,2,3,4,5].map(i => <FaStar key={i} className="text-gold" />)}
+                       </div>
+                       <h4 className="Oswald fw-light text-playfair lh-base mb-5 fs-4" style={{ letterSpacing: '0.5px' }}>
+                         "One of my favourite places. I've been going to Kareh's Spa for over a year now. They are a full service sanctuary and tend to do everything with absolute perfection. A true one stop shop for all my beauty needs."
+                       </h4>
+                       <div className="d-flex align-items-center">
+                          <div className="rounded-circle overflow-hidden me-3 border border-warning" style={{ width: '60px', height: '60px' }}>
+                            <img src={shave4Img} className="w-100 h-100 object-fit-cover" alt="Client" loading="lazy" decoding="async" />
+                          </div>
+                          <div>
+                            <p className="m-0 fw-bold Oswald tracking-widest fs-5">SARAH M.</p>
+                            <p className="m-0 small opacity-75 text-uppercase tracking-widest font-monospace" style={{ fontSize: '10px' }}>Loyal Client</p>
+                          </div>
+                       </div>
+                    </div>
+                 </motion.div>
+               </div>
+               <div className="col-lg-6">
+                 <div className="row g-4">
+                    {[
+                      { img: nail5Img, handle: "@karehs_spa", date: "2 days ago" },
+                      { img: nailVideo, isVideo: true, handle: "@karehs_spa", date: "1 week ago" }
+                    ].map((item, id) => (
+                      <div className="col-6" key={id}>
+                        <motion.div initial="hidden" whileInView="visible" viewport={{ once: true }} variants={imageReveal} className="position-relative rounded-4 overflow-hidden group premium-card-hover" style={{ height: '300px' }}>
+                           {item.isVideo ? (
+                            <video
+                              src={item.img}
+                              className="w-100 h-100 object-fit-cover transition-all duration-700 group-hover-scale-110"
+                              autoPlay={shouldAutoplayVideos}
+                              muted
+                              loop
+                              playsInline
+                              preload="none"
+                              style={{ transition: 'transform 1.5s ease' }}
+                            />
+                           ) : (
+                             <img src={item.img} className="w-100 h-100 object-fit-cover transition-all duration-700 group-hover-scale-110" alt="Instagram" loading="lazy" decoding="async" style={{ transition: 'transform 1.5s ease' }} />
+                           )}
+                           <div className="position-absolute inset-0 top-0 left-0 w-100 h-100 d-flex flex-column justify-content-between p-4" style={{ background: 'linear-gradient(to top, rgba(0,0,0,0.9), transparent 60%)' }}>
+                              <div className="text-end">
+                                <FaInstagram className="fs-4 text-white drop-shadow" />
+                              </div>
+                              <div>
+                                <p className="m-0 small fw-bold tracking-widest mb-1">{item.handle}</p>
+                                <p className="m-0 text-white-50" style={{ fontSize: '11px' }}>{item.date}</p>
+                              </div>
+                           </div>
+                        </motion.div>
+                      </div>
+                    ))}
+                 </div>
+                 <div className="text-center mt-5">
+                    <Link to="/gallery" className="btn btn-outline-light rounded-pill px-5 py-3 tracking-widest text-uppercase" style={{ fontSize: '12px' }}>
+                       <FaInstagram className="me-2 mb-1 fs-5" /> Explore Gallery
+                    </Link>
+                 </div>
+               </div>
+            </div>
+        </div>
+      </section>
+
       {/* FULL WIDTH CALL TO ACTION */}
-      <section className="position-relative py-5 overflow-hidden" style={{ minHeight: '80vh', display: 'flex', alignItems: 'center' }}>
-        <div className="position-absolute w-100 h-100 top-0 left-0 bg-dark" style={{ backgroundImage: `url(${heroImg})`, backgroundSize: 'cover', backgroundAttachment: 'fixed', opacity: 0.15 }}></div>
+      <section className="home-cta-section position-relative py-5 overflow-hidden" style={{ display: 'flex', alignItems: 'center' }}>
+        <div
+          className="position-absolute w-100 h-100 top-0 left-0 bg-dark"
+          style={{
+            backgroundImage: `url(${ctaImg})`,
+            backgroundSize: 'cover',
+            backgroundAttachment: shouldAutoplayVideos ? 'fixed' : 'scroll',
+            opacity: 0.15
+          }}
+        ></div>
         <div className="mesh-glow"></div>
         
         <div className="container position-relative py-5 text-center">
@@ -192,43 +361,13 @@ const HomePage: React.FC = () => {
             </p>
             <div className="d-flex flex-wrap justify-content-center gap-3">
                 <Link to="/booking" className="btn btn-gold px-5 py-4 fw-bold shadow-lg Oswald h4 mb-0">
-                  RESERVE YOUR SPOT NOW
+                  SCHEDULE YOUR VISIT
                 </Link>
             </div>
+
           </motion.div>
         </div>
       </section>
-
-      {/* SIMPLE FOOTER */}
-      <footer className="py-5 border-top border-white border-opacity-10">
-        <div className="container py-4">
-          <div className="row g-4 align-items-center">
-            <div className="col-md-4 text-center text-md-start">
-               <h3 className="brand-title h4 m-0 text-gradient">KAREH&apos;S SPA</h3>
-               <p className="small opacity-50 mt-2 mb-0 Outfit">
-                 Ngong Town, Milele Mall, 1st Floor.<br/>
-                 Call: 0743 695 893<br/>
-                 Email: karehspa2024@gmail.com
-               </p>
-            </div>
-            <div className="col-md-4 text-center">
-               <div className="d-flex justify-content-center gap-4">
-                 <a href="https://instagram.com/karehs_barbershop_spa" className="text-white opacity-50 hover-opacity-100 transition-all"><FaInstagram size={18}/></a>
-                 <a href="#" className="text-white opacity-50 hover-opacity-100 transition-all"><FaFacebookF size={18}/></a>
-                 <a href="#" className="text-white opacity-50 hover-opacity-100 transition-all"><FaTwitter size={18}/></a>
-               </div>
-               <p className="small tracking-widest text-uppercase opacity-25 mt-3" style={{ fontSize: '10px' }}>@Kareh&apos;sBarbershop&amp;spa</p>
-            </div>
-            <div className="col-md-4 text-center text-md-end">
-               <p className="small opacity-50 m-0 Outfit">Developed by <span className="text-white fw-medium">JosongTech</span></p>
-               <div className="mt-2">
-                 <Link to="/privacy" className="small text-decoration-none text-white opacity-25 me-3">Privacy</Link>
-                 <Link to="/terms" className="small text-decoration-none text-white opacity-25">Terms</Link>
-               </div>
-            </div>
-          </div>
-        </div>
-      </footer>
 
     </div>
   );

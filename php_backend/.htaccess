@@ -1,0 +1,15 @@
+Options -Indexes
+
+# Block direct access to sensitive internals.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteRule ^config/ - [F,L]
+  RewriteRule ^migrations/ - [F,L]
+  RewriteRule \.env$ - [F,L,NC]
+  RewriteRule \.env\.local$ - [F,L,NC]
+  RewriteRule \.env\.example$ - [F,L,NC]
+</IfModule>
+
+<FilesMatch "^(migrate\.php|scratch_.*\.php)$">
+  Require all denied
+</FilesMatch>
