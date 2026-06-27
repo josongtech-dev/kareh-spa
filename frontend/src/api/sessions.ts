@@ -34,10 +34,11 @@ export const sessionsApi = {
       session_id: sessionId,
       payment_method: paymentMethod,
     }),
-  paySession: (sessionId: number, transactionCode: string) =>
+  paySession: (sessionId: number, transactionCode: string, paymentMethod?: string) =>
     api.post('/sessions.php?action=pay_session', {
       session_id: sessionId,
       transaction_code: transactionCode,
+      payment_method: paymentMethod || 'manual',
     }),
   getPaymentStatus: (sessionId: number) =>
     api.get(`/sessions.php?action=payment_status&id=${sessionId}&_=${Date.now()}`),

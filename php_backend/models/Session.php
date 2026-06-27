@@ -135,7 +135,7 @@ class Session extends BaseModel {
         $stmt->bind_param($types, ...$params);
         $stmt->execute();
         $result = $stmt->get_result();
-        $row = $result->fetch_assoc();
+        $row = $result ? $result->fetch_assoc() : null;
         return $this->enrichSessionRowWithServiceLines($row);
     }
 
@@ -260,7 +260,9 @@ class Session extends BaseModel {
             $stmt->bind_param("iiidi", $sessionId, $serviceId, $assignedStaffId, $normalizedPrice, $defaultFlag);
             if (!$stmt->execute()) throw new Exception("Execute add service failed: " . $stmt->error);
 
-            $this->recalculateSessionTotal($sessionId);
+            if (!$this->recalculateSessionTotal($sessionId)) {
+                throw new Exception("Failed to update total after adding service.");
+            }
 
             $this->conn->commit();
             return true;
@@ -297,7 +299,9 @@ class Session extends BaseModel {
             $deleteStmt->bind_param("i", $sessionServiceId);
             if (!$deleteStmt->execute()) throw new Exception("Execute delete failed: " . $deleteStmt->error);
 
-            $this->recalculateSessionTotal($sessionId);
+            if (!$this->recalculateSessionTotal($sessionId)) {
+                throw new Exception("Failed to update total after removing service.");
+            }
 
             $this->conn->commit();
             $this->lastError = null;
@@ -310,7 +314,7 @@ class Session extends BaseModel {
         }
     }
 
-    public function paySession($sessionId, $transactionCode) {
+    public function paySession($sessionId, $transactionCode, $paymentMethod = 'manual') {
         $session = $this->getById($sessionId);
         if (!$session) {
             $this->lastError = 'Session not found.';
@@ -331,14 +335,14 @@ class Session extends BaseModel {
                   SET billing_status = 'paid',
                       paid_at = NOW(),
                       payment_transaction_code = ?,
-                      pesapal_payment_method = COALESCE(pesapal_payment_method, 'manual')
+                      pesapal_payment_method = ?
                   WHERE id = ?";
         $stmt = $this->conn->prepare($query);
         if (!$stmt) {
             $this->lastError = 'Failed to prepare payment update.';
             return false;
         }
-        $stmt->bind_param("si", $code, $sessionId);
+        $stmt->bind_param("ssi", $code, $paymentMethod, $sessionId);
         if (!$stmt->execute()) {
             $this->lastError = $stmt->error;
             return false;
@@ -353,17 +357,39 @@ class Session extends BaseModel {
             $this->lastError = 'Session not found.';
             return false;
         }
-        if (strtolower((string)($session['billing_status'] ?? '')) === 'paid') {
+        if (!isset($session['billing_status']) || strtolower((string)($session['billing_status'] ?? '')) === 'paid') {
             $this->lastError = 'Session is already paid.';
             return false;
         }
 
         $total = floatval($session['total_amount'] ?? 0);
-        if ($total <= 0) {
-            error_log('Pesapal initiate: total_amount=0 for session ' . $sessionId
-                . ', service_lines=' . ($session['service_lines'] ? count($session['service_lines']) : 0)
+
+        $recalculatedTotal = 0;
+        if (isset($session['service_lines']) && is_array($session['service_lines'])) {
+            foreach ($session['service_lines'] as $line) {
+                $recalculatedTotal += floatval($line['price'] ?? 0);
+            }
+        }
+        if (isset($session['addon_lines']) && is_array($session['addon_lines'])) {
+            foreach ($session['addon_lines'] as $addon) {
+                $recalculatedTotal += floatval($addon['line_total'] ?? 0);
+            }
+        }
+
+        if ($recalculatedTotal > 0 && abs($total - $recalculatedTotal) > 0.01) {
+            $total = $recalculatedTotal;
+            $fixStmt = $this->conn->prepare("UPDATE {$this->table} SET total_amount = ? WHERE id = ?");
+            if ($fixStmt) {
+                $fixStmt->bind_param("di", $total, $sessionId);
+                $fixStmt->execute();
+            }
+        }
+
+        if ($total < 0.01) {
+            error_log('Pesapal initiate: total=' . $total . ' for session ' . $sessionId
+                . ', service_lines=' . (isset($session['service_lines']) ? count($session['service_lines']) : 0)
                 . ', billing_status=' . ($session['billing_status'] ?? '?'));
-            $this->lastError = 'Session total is zero — add services before billing.';
+            $this->lastError = 'Session total (' . number_format($total, 2) . ') is below the minimum payment amount.';
             return false;
         }
 
@@ -471,10 +497,11 @@ class Session extends BaseModel {
 
     public function findSessionByMerchantReference($merchantReference) {
         $query = "SELECT id, session_code, customer_name, total_amount, billing_status,
-                         pesapal_order_tracking_id, pesapal_payment_method
-                  FROM {$this->table}
-                  WHERE pesapal_merchant_reference = ?
-                  LIMIT 1";
+                         pesapal_order_tracking_id, pesapal_payment_method,
+                         pesapal_merchant_reference, payment_transaction_code, paid_at
+                   FROM {$this->table}
+                   WHERE pesapal_merchant_reference = ?
+                   LIMIT 1";
         $stmt = $this->conn->prepare($query);
         if (!$stmt) return null;
         $stmt->bind_param("s", $merchantReference);
@@ -485,10 +512,11 @@ class Session extends BaseModel {
 
     public function findSessionByOrderTrackingId($orderTrackingId) {
         $query = "SELECT id, session_code, customer_name, total_amount, billing_status,
-                         pesapal_merchant_reference, pesapal_payment_method
-                  FROM {$this->table}
-                  WHERE pesapal_order_tracking_id = ?
-                  LIMIT 1";
+                         pesapal_merchant_reference, pesapal_payment_method,
+                         payment_transaction_code, paid_at
+                   FROM {$this->table}
+                   WHERE pesapal_order_tracking_id = ?
+                   LIMIT 1";
         $stmt = $this->conn->prepare($query);
         if (!$stmt) return null;
         $stmt->bind_param("s", $orderTrackingId);
@@ -621,7 +649,9 @@ class Session extends BaseModel {
             $stmt->bind_param("iiddd", $sessionId, $addonId, $qty, $matPrice, $labPrice, $bulkLabPrice);
             if (!$stmt->execute()) throw new Exception("Execute add addon failed: " . $stmt->error);
 
-            $this->recalculateSessionTotal($sessionId);
+            if (!$this->recalculateSessionTotal($sessionId)) {
+                throw new Exception("Failed to update total after adding addon.");
+            }
             $this->conn->commit();
             return true;
         } catch (Exception $e) {
@@ -657,7 +687,9 @@ class Session extends BaseModel {
             $deleteStmt->bind_param("i", $sessionAddonId);
             if (!$deleteStmt->execute()) throw new Exception("Execute delete failed: " . $deleteStmt->error);
 
-            $this->recalculateSessionTotal($sessionId);
+            if (!$this->recalculateSessionTotal($sessionId)) {
+                throw new Exception("Failed to update total after removing addon.");
+            }
             $this->conn->commit();
             $this->lastError = null;
             return true;
@@ -670,18 +702,24 @@ class Session extends BaseModel {
     }
 
     public function logPaymentEvent(int $sessionId, string $eventType, ?array $eventData = null, ?string $trackingId = null, ?string $merchantReference = null): void {
-        $stmt = $this->conn->prepare(
-            "INSERT INTO payment_audit_log (session_id, event_type, event_data, ip_address, user_agent, pesapal_order_tracking_id, pesapal_merchant_reference)
-             VALUES (?, ?, ?, ?, ?, ?, ?)"
-        );
-        if (!$stmt) return;
+        try {
+            $stmt = $this->conn->prepare(
+                "INSERT INTO payment_audit_log (session_id, event_type, event_data, ip_address, user_agent, pesapal_order_tracking_id, pesapal_merchant_reference)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+            );
+            if (!$stmt) return;
 
-        $ip = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
-        $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
-        $jsonData = $eventData !== null ? json_encode($eventData) : null;
-        $stmt->bind_param("issssss", $sessionId, $eventType, $jsonData, $ip, $ua, $trackingId, $merchantReference);
-        $stmt->execute();
-        $stmt->close();
+            $ip = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
+            $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
+            $jsonData = $eventData !== null ? json_encode($eventData) : null;
+            $stmt->bind_param("issssss", $sessionId, $eventType, $jsonData, $ip, $ua, $trackingId, $merchantReference);
+            if (!$stmt->execute()) {
+                error_log('logPaymentEvent failed: ' . $stmt->error);
+            }
+            $stmt->close();
+        } catch (\Throwable $e) {
+            error_log('logPaymentEvent exception: ' . $e->getMessage());
+        }
     }
 
     public function getLastError() {

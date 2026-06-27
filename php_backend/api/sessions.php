@@ -13,4 +13,9 @@ $authData = AuthMiddleware::requireAuth(['owner', 'manager', 'receptionist', 'at
 RateLimiter::limitApi();
 
 $controller = new SessionController($conn, $authData);
-$controller->handleRequest();
+try {
+    $controller->handleRequest();
+} catch (\Throwable $e) {
+    error_log('sessions.php fatal: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+    Response::error('Sessions endpoint failed. Check backend logs.', 500);
+}

@@ -235,6 +235,24 @@ function handleCallback(mysqli $conn) {
     }
 }
 
+function loadReceiptSessionData(Session $sessionModel, int $sessionId): ?array {
+    $full = $sessionModel->getById($sessionId);
+    if (!$full) return null;
+    return [
+        'session_id' => $sessionId,
+        'session_code' => $full['session_code'] ?? '',
+        'customer_name' => $full['customer_name'] ?? '',
+        'client_phone' => $full['client_phone'] ?? '',
+        'client_email' => $full['client_email'] ?? '',
+        'service_lines' => $full['service_lines'] ?? [],
+        'addon_lines' => $full['addon_lines'] ?? [],
+        'total_amount' => floatval($full['total_amount'] ?? 0),
+        'payment_transaction_code' => $full['payment_transaction_code'] ?? '',
+        'paid_at' => $full['paid_at'] ?? '',
+        'payment_method' => $full['pesapal_payment_method'] ?? '',
+    ];
+}
+
 function checkTransactionStatus(mysqli $conn) {
     $orderTrackingId = trim((string)($_GET['order_tracking_id'] ?? ''));
     if ($orderTrackingId === '') {
@@ -242,6 +260,43 @@ function checkTransactionStatus(mysqli $conn) {
     }
 
     try {
+        $merchantReference = $_GET['merchant_reference'] ?? '';
+
+        $session = resolveSession($conn, $merchantReference, $orderTrackingId);
+        if ($session) {
+            $sessionModel = new Session($conn);
+            $sessionId = intval($session['id']);
+
+            $billingStatus = strtolower((string)($session['billing_status'] ?? ''));
+            if ($billingStatus === 'paid') {
+                $sessionModel->logPaymentEvent($sessionId, 'status_checked', [
+                    'payment_status_description' => 'completed',
+                    'payment_status' => '1',
+                    'source' => 'db_cache',
+                ], $orderTrackingId, $session['pesapal_merchant_reference'] ?? $merchantReference);
+
+                $receipt = loadReceiptSessionData($sessionModel, $sessionId);
+
+                $resp = [
+                    'status' => 'completed',
+                    'payment_status' => '1',
+                    'description' => 'Payment completed successfully',
+                    'confirmation_code' => $session['payment_transaction_code'] ?? '',
+                    'amount' => floatval($session['total_amount'] ?? 0),
+                    'currency' => 'KES',
+                    'payment_method' => $session['pesapal_payment_method'] ?? '',
+                    'merchant_reference' => $session['pesapal_merchant_reference'] ?? '',
+                    'order_tracking_id' => $orderTrackingId,
+                    'created_date' => $session['paid_at'] ?? '',
+                ];
+                if ($receipt) {
+                    $resp['receipt'] = $receipt;
+                }
+                Response::json($resp);
+                return;
+            }
+        }
+
         $gateway = new PesapalGateway();
         $token = $gateway->getAccessToken();
         if (!$token || empty($token->token)) {
@@ -257,16 +312,28 @@ function checkTransactionStatus(mysqli $conn) {
         $code = $status->payment_status ?? '';
         $confirmationCode = $status->confirmation_code ?? '';
 
-        $session = resolveSession($conn, $_GET['merchant_reference'] ?? $status->merchant_reference ?? '', $orderTrackingId);
-        if ($session) {
-            $sessionModel = new Session($conn);
-            $sessionModel->logPaymentEvent(intval($session['id']), 'status_checked', [
+        $receipt = null;
+        if ($session && $sessionId && ($desc === 'completed' || $code === '1') && floatval($status->amount ?? 0) > 0) {
+            $confirmed = $sessionModel->confirmPesapalPayment($sessionId, $orderTrackingId, $confirmationCode);
+            $sessionModel->logPaymentEvent($sessionId, 'confirmed', [
                 'payment_status_description' => $desc,
                 'payment_status' => $code,
-            ], $orderTrackingId, $status->merchant_reference ?? '');
+                'confirmation_code' => $confirmationCode,
+                'source' => 'check_status_poll',
+            ], $orderTrackingId, $merchantReference);
+            if (is_array($confirmed) && !empty($confirmed['client_email'])) {
+                require_once __DIR__ . '/../utils/AppointmentMailer.php';
+                AppointmentMailer::sendPaymentReceived($confirmed);
+            }
+            $receipt = loadReceiptSessionData($sessionModel, $sessionId);
+        } elseif ($session && $sessionId) {
+            $sessionModel->logPaymentEvent($sessionId, 'status_checked', [
+                'payment_status_description' => $desc,
+                'payment_status' => $code,
+            ], $orderTrackingId, $session['pesapal_merchant_reference'] ?? $merchantReference);
         }
 
-        Response::json([
+        $resp = [
             'status' => $desc,
             'payment_status' => $code,
             'description' => $status->payment_status_description ?? '',
@@ -277,7 +344,11 @@ function checkTransactionStatus(mysqli $conn) {
             'merchant_reference' => $status->merchant_reference ?? '',
             'order_tracking_id' => $status->order_tracking_id ?? '',
             'created_date' => $status->created_date ?? '',
-        ]);
+        ];
+        if ($receipt) {
+            $resp['receipt'] = $receipt;
+        }
+        Response::json($resp);
     } catch (\Throwable $e) {
         error_log('Pesapal check_status error: ' . $e->getMessage());
         Response::error('Payment verification failed', 502);

@@ -253,8 +253,10 @@ class SessionController extends BaseController {
 
         if ($this->sessionModel->addServiceToSession($sessionId, $serviceId, $price, $assignedStaffId)) {
             $session = $this->sessionModel->getById($sessionId, $this->authData);
+            $code = $session ? ($session['session_code'] ?? 'Unknown') : 'Unknown';
             $svcName = $session ? ($session['service_lines'][count($session['service_lines']) - 1]['service_name'] ?? 'service') : 'service';
-            ActivityLogger::logFromAuthData($this->conn, 'session', 'service_added', "{$svcName} added to session {$session['session_code']}", $this->authData, 'session', $sessionId);
+            ActivityLogger::logFromAuthData($this->conn, 'session', 'service_added', "{$svcName} added to session {$code}", $this->authData, 'session', $sessionId);
+            $session = $session ?: ['id' => $sessionId];
             Response::json(['message' => 'Service added to session successfully', 'session' => $session]);
         } else {
             $detail = $this->sessionModel->getLastError();
@@ -388,10 +390,16 @@ class SessionController extends BaseController {
                 'zip_code' => '',
             ];
 
+            $roundedAmount = round($initData['amount'], 2);
+            if ($roundedAmount < 0.01) {
+                error_log('Pesapal initiatePayment: rounded amount is ' . $roundedAmount . ' from original ' . $initData['amount'] . ' for session ' . $sessionId);
+                Response::error('Payment amount is invalid after rounding.', 400);
+            }
+
             $orderData = [
                 'id' => $initData['merchant_reference'],
                 'currency' => 'KES',
-                'amount' => round($initData['amount'], 2),
+                'amount' => $roundedAmount,
                 'description' => 'Kareh\'s Spa — ' . $sessionData['session_code'],
                 'callback_url' => $callbackUrl,
                 'notification_id' => $ipnId,
@@ -441,10 +449,11 @@ class SessionController extends BaseController {
         if (!$data) $data = $_POST;
         $sessionId = intval($data['session_id'] ?? 0);
         $transactionCode = trim((string)($data['transaction_code'] ?? ''));
+        $paymentMethod = strtoupper(trim((string)($data['payment_method'] ?? 'manual')));
         if ($sessionId <= 0) Response::error('session_id is required', 400);
         if ($transactionCode === '') Response::error('transaction_code is required', 400);
 
-        if (!$this->sessionModel->paySession($sessionId, $transactionCode)) {
+        if (!$this->sessionModel->paySession($sessionId, $transactionCode, $paymentMethod)) {
             $detail = $this->sessionModel->getLastError();
             Response::error($detail ?: 'Failed to record payment', 400);
         }

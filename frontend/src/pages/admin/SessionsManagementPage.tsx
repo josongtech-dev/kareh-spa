@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate } from 'react-router-dom';
 import {
   FiPlus, FiSearch, FiDollarSign, FiX, FiRefreshCw, FiTrash2, FiClock,
   FiMoreHorizontal, FiEye, FiEdit, FiChevronDown, FiChevronRight, FiInbox,
-  FiSmartphone, FiCreditCard, FiCheckCircle, FiAlertCircle
+  FiSmartphone, FiCreditCard, FiCheckCircle, FiAlertCircle, FiPrinter
 } from 'react-icons/fi';
 import AdminLayout, { AdminThemeContext } from './AdminLayout';
 import AdminModal from '../../components/admin/AdminModal';
@@ -13,6 +13,7 @@ import { sessionsApi } from '../../api/sessions';
 import { staffApi } from '../../api/staff';
 import { serviceApi } from '../../api/services';
 import SearchableSelect from '../../components/admin/SearchableSelect';
+import Receipt from '../../components/Receipt';
 import { memberApi } from '../../api/members';
 import { addonApi } from '../../api/addons';
 import MonthFilterBar from '../../components/admin/MonthFilterBar';
@@ -92,9 +93,12 @@ const SessionsManagementPage = () => {
 
   const [showBillModal, setShowBillModal] = useState(false);
   const [billSession, setBillSession] = useState<any>(null);
-  const [billPaymentMethod, setBillPaymentMethod] = useState<'MPESA' | 'CARD' | ''>('');
+  const [billPaymentMethod, setBillPaymentMethod] = useState<'MPESA' | 'CARD' | 'CASH' | ''>('');
+  const [billTransactionCode, setBillTransactionCode] = useState('');
   const [billError, setBillError] = useState('');
   const [billLoading, setBillLoading] = useState(false);
+  const [showCashReceipt, setShowCashReceipt] = useState(false);
+  const [cashReceiptData, setCashReceiptData] = useState<any>(null);
 
   const [showPesapalModal, setShowPesapalModal] = useState(false);
   const [pesapalUrl, setPesapalUrl] = useState('');
@@ -280,37 +284,13 @@ const SessionsManagementPage = () => {
         addServiceStaffId ? Number(addServiceStaffId) : undefined
       );
 
-      const newLineId = res?.data?.data?.id || res?.data?.service_line_id || Date.now();
-      const staffName = addServiceStaffId
-        ? staffList.find((s: any) => String(s.id) === addServiceStaffId)?.name || ''
-        : '';
-
       if (res?.data?.data?.session) {
-        const updated = res.data.data.session;
         setSessions(prev =>
-          prev.map(s => (Number(s.id) === addServiceSessionId ? updated : s))
-        );
-      } else {
-        setSessions(prev =>
-          prev.map(session =>
-            Number(session.id) === addServiceSessionId
-              ? {
-                  ...session,
-                  service_lines: [
-                    ...(session.service_lines || []),
-                    {
-                      id: newLineId,
-                      service_name: svc.name,
-                      price: String(svc.price),
-                      assigned_staff_name: staffName,
-                      assigned_staff_id: addServiceStaffId ? Number(addServiceStaffId) : null,
-                    },
-                  ],
-                }
-              : session
-          )
+          prev.map(s => (Number(s.id) === addServiceSessionId ? res.data.data.session : s))
         );
       }
+
+      await fetchData();
 
       setAddServiceSessionId(null);
       setAddServiceId('');
@@ -334,9 +314,8 @@ const SessionsManagementPage = () => {
         setSessions(prev =>
           prev.map(s => (Number(s.id) === addServiceSessionId ? res.data.data.session : s))
         );
-      } else {
-        await fetchData();
       }
+      await fetchData();
       setAddAddonId('');
       setAddAddonQty(1);
       setSuccessMsg('Addon added successfully.');
@@ -348,19 +327,11 @@ const SessionsManagementPage = () => {
     }
   };
 
-  const handleRemoveAddon = async (sessionId: number, addonLineId: number) => {
+  const handleRemoveAddon = async (_sessionId: number, addonLineId: number) => {
     setLoading(true);
     try {
-      const res = await sessionsApi.removeAddon(addonLineId);
-      if (res?.data?.status === 'success') {
-        setSessions(prev =>
-          prev.map(s =>
-            Number(s.id) === sessionId
-              ? { ...s, addon_lines: (s.addon_lines || []).filter((a: any) => a.id !== addonLineId) }
-              : s
-          )
-        );
-      }
+      await sessionsApi.removeAddon(addonLineId);
+      await fetchData();
       setSuccessMsg('Addon removed.');
       setShowSuccess(true);
     } catch (error) {
@@ -378,6 +349,30 @@ const SessionsManagementPage = () => {
       if (!billPaymentMethod) {
         setBillError('Please select a payment method.');
         setBillLoading(false);
+        return;
+      }
+
+      if (billPaymentMethod === 'CASH') {
+        if (!billTransactionCode.trim()) {
+          setBillError('Please enter the M-Pesa deposit transaction code.');
+          setBillLoading(false);
+          return;
+        }
+        const res = await sessionsApi.paySession(Number(billSession.id), billTransactionCode.trim(), 'CASH');
+        const sessionData = res?.data?.data;
+        if (!sessionData?.session) {
+          throw new Error(sessionData?.message || 'Failed to record cash payment.');
+        }
+        setShowBillModal(false);
+        setBillSession(null);
+        setBillPaymentMethod('');
+        setBillTransactionCode('');
+        setCashReceiptData({
+          ...sessionData.session,
+          payment_method: 'CASH',
+        });
+        setShowCashReceipt(true);
+        await fetchData();
         return;
       }
 
@@ -441,10 +436,12 @@ const SessionsManagementPage = () => {
           setPesapalStatus('failed');
           setPesapalMessage('Payment failed.');
           if (pesapalIntervalRef.current) clearInterval(pesapalIntervalRef.current);
+          fetchData();
         } else if (data?.status === 'cancelled') {
           setPesapalStatus('failed');
           setPesapalMessage('Payment was cancelled.');
           if (pesapalIntervalRef.current) clearInterval(pesapalIntervalRef.current);
+          fetchData();
         }
       } catch {
         console.error('Polling error');
@@ -497,12 +494,7 @@ const SessionsManagementPage = () => {
     try {
       const lineId = confirmAction.payload;
       await sessionsApi.removeService(lineId);
-      setSessions(prev =>
-        prev.map(session => ({
-          ...session,
-          service_lines: (session.service_lines || []).filter((l: any) => l.id !== lineId),
-        }))
-      );
+      await fetchData();
       setConfirmAction(null);
       setSuccessMsg('Service removed successfully.');
       setShowSuccess(true);
@@ -554,7 +546,9 @@ const SessionsManagementPage = () => {
     const servicesTotal = lines.reduce((acc: number, l: any) => acc + parseFloat(String(l.price || 0).replace(/,/g, '')), 0);
     const addonLines = session?.addon_lines || [];
     const addonsTotal = addonLines.reduce((acc: number, a: any) => acc + parseFloat(String(a.line_total || a.material_total + a.labour_total || 0).replace(/,/g, '')), 0);
-    return servicesTotal + addonsTotal;
+    const computedTotal = servicesTotal + addonsTotal;
+    if (computedTotal > 0) return computedTotal;
+    return parseFloat(String(session?.total_amount || 0));
   };
 
   const isPaid = (s: any) => String(s.billing_status || '').toLowerCase() === 'paid';
@@ -1216,6 +1210,19 @@ const SessionsManagementPage = () => {
               <span className="fw-bold small">Total</span>
               <span className="fw-bold text-purple">KES {getSessionTotal(viewSession).toLocaleString()}</span>
             </div>
+            {isPaid(viewSession) && viewSession.pesapal_order_tracking_id && (
+              <div className="d-flex justify-content-end mt-2 no-print">
+                <a
+                  href={`/payment/callback?order_tracking_id=${viewSession.pesapal_order_tracking_id}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="btn btn-sm btn-outline-secondary rounded-pill px-3 py-1 d-flex align-items-center gap-1"
+                  style={{ fontSize: 12 }}
+                >
+                  <FiPrinter size={12} /> Receipt
+                </a>
+              </div>
+            )}
           </div>
         )}
       </AdminModal>
@@ -1295,7 +1302,7 @@ const SessionsManagementPage = () => {
                 type="button"
                 className={`d-flex align-items-center gap-3 p-3 rounded-4 border flex-fill text-start transition-all ${billPaymentMethod === 'MPESA' ? 'border-success bg-success bg-opacity-10' : 'border-opacity-20 bg-transparent'}`}
                 style={{ border: `2px solid ${billPaymentMethod === 'MPESA' ? '#198754' : 'rgba(128,128,128,0.2)'}`, transition: 'all 0.2s' }}
-                onClick={() => setBillPaymentMethod('MPESA')}
+                onClick={() => { setBillPaymentMethod('MPESA'); setBillTransactionCode(''); }}
               >
                 <div className={`rounded-circle d-flex align-items-center justify-content-center ${billPaymentMethod === 'MPESA' ? 'bg-success' : 'bg-secondary bg-opacity-10'}`} style={{ width: 44, height: 44 }}>
                   <FiSmartphone size={20} className={billPaymentMethod === 'MPESA' ? 'text-white' : 'text-secondary'} />
@@ -1310,7 +1317,7 @@ const SessionsManagementPage = () => {
                 type="button"
                 className={`d-flex align-items-center gap-3 p-3 rounded-4 border flex-fill text-start transition-all ${billPaymentMethod === 'CARD' ? 'border-purple bg-purple bg-opacity-10' : 'border-opacity-20 bg-transparent'}`}
                 style={{ border: `2px solid ${billPaymentMethod === 'CARD' ? '#6a0dad' : 'rgba(128,128,128,0.2)'}`, transition: 'all 0.2s' }}
-                onClick={() => setBillPaymentMethod('CARD')}
+                onClick={() => { setBillPaymentMethod('CARD'); setBillTransactionCode(''); }}
               >
                 <div className={`rounded-circle d-flex align-items-center justify-content-center ${billPaymentMethod === 'CARD' ? 'bg-purple' : 'bg-secondary bg-opacity-10'}`} style={{ width: 44, height: 44 }}>
                   <FiCreditCard size={20} className={billPaymentMethod === 'CARD' ? 'text-white' : 'text-secondary'} />
@@ -1321,7 +1328,39 @@ const SessionsManagementPage = () => {
                 </div>
                 {billPaymentMethod === 'CARD' && <FiCheckCircle className="ms-auto text-purple" size={18} />}
               </button>
+              <button
+                type="button"
+                className={`d-flex align-items-center gap-3 p-3 rounded-4 border flex-fill text-start transition-all ${billPaymentMethod === 'CASH' ? 'border-warning bg-warning bg-opacity-10' : 'border-opacity-20 bg-transparent'}`}
+                style={{ border: `2px solid ${billPaymentMethod === 'CASH' ? '#ffc107' : 'rgba(128,128,128,0.2)'}`, transition: 'all 0.2s' }}
+                onClick={() => { setBillPaymentMethod('CASH'); setBillTransactionCode(''); }}
+              >
+                <div className={`rounded-circle d-flex align-items-center justify-content-center ${billPaymentMethod === 'CASH' ? 'bg-warning' : 'bg-secondary bg-opacity-10'}`} style={{ width: 44, height: 44 }}>
+                  <FiDollarSign size={20} className={billPaymentMethod === 'CASH' ? 'text-white' : 'text-secondary'} />
+                </div>
+                <div>
+                  <div className={`fw-bold small ${billPaymentMethod === 'CASH' ? 'text-warning' : ''}`}>Cash</div>
+                  <div className="x-small text-secondary">Deposit via M-Pesa</div>
+                </div>
+                {billPaymentMethod === 'CASH' && <FiCheckCircle className="ms-auto text-warning" size={18} />}
+              </button>
             </div>
+
+            {billPaymentMethod === 'CASH' && (
+              <div className="mb-4">
+                <label className="form-label small fw-bold text-uppercase tracking-wider text-secondary mb-2">Deposit Transaction Code (Internal)</label>
+                <div className="input-group">
+                  <span className="input-group-text bg-dark border-opacity-20 text-secondary"><FiSmartphone size={16} /></span>
+                  <input
+                    type="text"
+                    className="form-control bg-transparent border-opacity-20"
+                    placeholder="e.g. QW12ER34TY56"
+                    value={billTransactionCode}
+                    onChange={(e) => setBillTransactionCode(e.target.value)}
+                  />
+                </div>
+                <div className="x-small text-secondary mt-1">Internal — M-Pesa code from depositing cash to the business till for reconciliation</div>
+              </div>
+            )}
 
             {billError && <div className="alert alert-danger py-2 small">{billError}</div>}
             <div className="d-flex justify-content-end gap-2">
@@ -1335,12 +1374,23 @@ const SessionsManagementPage = () => {
                 {billLoading ? (
                   <><span className="spinner-border spinner-border-sm" /> PROCESSING...</>
                 ) : (
-                  <><FiDollarSign size={14} /> REQUEST PAYMENT</>
+                  <><FiDollarSign size={14} /> {billPaymentMethod === 'CASH' ? 'RECORD CASH PAYMENT' : 'REQUEST PAYMENT'}</>
                 )}
               </button>
             </div>
           </div>
         )}
+      </AdminModal>
+
+      <AdminModal
+        isOpen={showCashReceipt}
+        onClose={() => { setShowCashReceipt(false); setCashReceiptData(null); }}
+        title="Payment Receipt"
+        subtitle={cashReceiptData ? `CASH - ${cashReceiptData.session_code}` : ''}
+        isDarkMode={isDarkMode}
+        maxWidth="480px"
+      >
+        {cashReceiptData && <Receipt data={cashReceiptData} />}
       </AdminModal>
 
       <AdminModal
@@ -1391,7 +1441,7 @@ const SessionsManagementPage = () => {
                 </button>
                 <button
                   className="btn btn-purple rounded-pill px-3 py-2 fw-bold shadow-lg"
-                  onClick={() => {
+                  onClick={async () => {
                     if (pesapalIntervalRef.current) clearInterval(pesapalIntervalRef.current);
 
                     const ctx = sessionStorage.getItem('pesapal_context');
@@ -1400,11 +1450,21 @@ const SessionsManagementPage = () => {
                       try { const p = JSON.parse(ctx); prevMethod = p.paymentMethod || ''; } catch {}
                     }
 
-                    const session = sessions.find((s: any) => Number(s.id) === Number(pesapalSessionId));
-                    if (session) {
-                      setBillSession(session);
-                      setBillPaymentMethod(prevMethod || (session.pesapal_payment_method?.toUpperCase() === 'CARD' ? 'CARD' : 'MPESA'));
-                      setBillError('');
+                    try {
+                      const res = await sessionsApi.getById(Number(pesapalSessionId));
+                      const session = res?.data?.data ?? res?.data ?? sessions.find((s: any) => Number(s.id) === Number(pesapalSessionId));
+                      if (session) {
+                        setBillSession(session);
+                        setBillPaymentMethod(prevMethod || (session.pesapal_payment_method?.toUpperCase() === 'CARD' ? 'CARD' : 'MPESA'));
+                        setBillError('');
+                      }
+                    } catch {
+                      const session = sessions.find((s: any) => Number(s.id) === Number(pesapalSessionId));
+                      if (session) {
+                        setBillSession(session);
+                        setBillPaymentMethod(prevMethod || (session.pesapal_payment_method?.toUpperCase() === 'CARD' ? 'CARD' : 'MPESA'));
+                        setBillError('');
+                      }
                     }
 
                     setPesapalUrl('');

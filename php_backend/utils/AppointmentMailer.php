@@ -363,16 +363,78 @@ class AppointmentMailer {
         $totalAmount = number_format((float)($session['total_amount'] ?? 0), 2);
         $paidAt = self::formatDateTime($session['paid_at'] ?? date('Y-m-d H:i:s'));
         $transactionCode = self::valueOrFallback($session['payment_transaction_code'] ?? '');
+        $paymentMethod = strtoupper(trim((string)($session['pesapal_payment_method'] ?? 'manual')));
+        if ($paymentMethod === 'CASH') {
+            $paymentMethodLabel = 'Cash (M-Pesa Deposit)';
+        } elseif ($paymentMethod === 'MPESA') {
+            $paymentMethodLabel = 'M-Pesa';
+        } elseif ($paymentMethod === 'CARD') {
+            $paymentMethodLabel = 'Card';
+        } else {
+            $paymentMethodLabel = 'Manual';
+        }
 
-        $subject = "Payment received - {$sessionCode}";
+        $servicesRows = '';
+        $services = is_array($session['service_lines'] ?? null) ? $session['service_lines'] : [];
+        foreach ($services as $s) {
+            $name = self::valueOrFallback($s['service_name'] ?? 'Service');
+            $price = number_format((float)($s['price'] ?? 0), 2);
+            $servicesRows .= "
+                <tr>
+                    <td style='padding:6px 8px;border-bottom:1px solid #eee;'>{$name}</td>
+                    <td style='padding:6px 8px;border-bottom:1px solid #eee;text-align:right;'>KES {$price}</td>
+                </tr>";
+        }
+
+        $addonsRows = '';
+        $addons = is_array($session['addon_lines'] ?? null) ? $session['addon_lines'] : [];
+        foreach ($addons as $a) {
+            $name = self::valueOrFallback($a['addon_name'] ?? 'Addon');
+            $qty = intval($a['quantity'] ?? 1);
+            $price = number_format((float)($a['price'] ?? 0), 2);
+            $lineTotal = number_format((float)($a['price'] ?? 0) * $qty, 2);
+            $addonsRows .= "
+                <tr>
+                    <td style='padding:6px 8px;border-bottom:1px solid #eee;'>{$name} × {$qty}</td>
+                    <td style='padding:6px 8px;border-bottom:1px solid #eee;text-align:right;'>KES {$lineTotal}</td>
+                </tr>";
+        }
+
+        $subject = "Receipt – Payment received for {$sessionCode}";
         $body = "
-            <h2 style='margin-bottom:8px;'>Hi {$customerName},</h2>
-            <p>We have received your payment for session {$sessionCode}. Thank you!</p>
-            <p><strong>Session ID:</strong> {$sessionCode}<br/>
-            <strong>Amount Paid:</strong> KES {$totalAmount}<br/>
-            <strong>Transaction Code:</strong> {$transactionCode}<br/>
-            <strong>Paid At:</strong> {$paidAt}</p>
-            <p>Thank you for choosing Kareh's Spa.</p>
+            <div style='max-width:560px;margin:0 auto;font-family:Helvetica,Arial,sans-serif;color:#333;'>
+                <div style='text-align:center;padding:24px 0;border-bottom:2px solid #6a0dad;margin-bottom:20px;'>
+                    <h1 style='margin:0;color:#6a0dad;font-size:22px;'>Kareh's Spa</h1>
+                    <p style='margin:4px 0 0;color:#666;font-size:13px;'>Official Payment Receipt</p>
+                </div>
+                <h2 style='margin:0 0 4px;font-size:16px;'>Hi {$customerName},</h2>
+                <p style='margin:0 0 16px;color:#555;font-size:14px;'>Thank you for your payment. Your receipt is below.</p>
+                <table style='width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;'>
+                    <tr><td style='padding:4px 0;color:#888;width:120px;'>Session Code</td><td style='padding:4px 0;font-weight:bold;'>{$sessionCode}</td></tr>
+                    <tr><td style='padding:4px 0;color:#888;'>Payment Method</td><td style='padding:4px 0;font-weight:bold;'>{$paymentMethodLabel}</td></tr>
+                    " . ($paymentMethod === 'CASH' ? '' : "<tr><td style='padding:4px 0;color:#888;'>Transaction Code</td><td style='padding:4px 0;font-weight:bold;'>{$transactionCode}</td></tr>") . "
+                    <tr><td style='padding:4px 0;color:#888;'>Paid At</td><td style='padding:4px 0;font-weight:bold;'>{$paidAt}</td></tr>
+                </table>
+                <table style='width:100%;border-collapse:collapse;font-size:13px;margin-bottom:16px;'>
+                    <thead>
+                        <tr style='background:#f8f6ff;'>
+                            <th style='padding:8px;text-align:left;color:#6a0dad;'>Service</th>
+                            <th style='padding:8px;text-align:right;color:#6a0dad;'>Amount</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {$servicesRows}
+                        {$addonsRows}
+                    </tbody>
+                    <tfoot>
+                        <tr>
+                            <td style='padding:8px;font-weight:bold;font-size:15px;border-top:2px solid #6a0dad;'>Total Paid</td>
+                            <td style='padding:8px;font-weight:bold;font-size:15px;border-top:2px solid #6a0dad;text-align:right;color:#6a0dad;'>KES {$totalAmount}</td>
+                        </tr>
+                    </tfoot>
+                </table>
+                <p style='text-align:center;color:#999;font-size:12px;margin-top:24px;'>Kareh's Spa &bull; Thank you for choosing us.</p>
+            </div>
         ";
 
         return self::send($to, $subject, $body);
