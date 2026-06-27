@@ -186,6 +186,10 @@ const SessionsManagementPage = () => {
       setSuccessMsg('Payment was not completed. You can retry below.');
       setShowSuccess(true);
       navigate('/admin/sessions', { replace: true });
+    } else if (paymentStatus === 'pending' && sessionId) {
+      setSuccessMsg('Payment is being processed. It will be confirmed shortly.');
+      setShowSuccess(true);
+      navigate('/admin/sessions', { replace: true });
     }
   }, [searchParams, navigate]);
 

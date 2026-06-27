@@ -172,10 +172,14 @@ const Receipt: React.FC<ReceiptProps> = ({ data }) => {
             <span style={{ color: '#555' }}>Payment</span>
             <span>{data.payment_method || 'M-Pesa'}</span>
           </div>
-          {data.payment_transaction_code && data.payment_method !== 'CASH' && (
+          {data.payment_method !== 'CASH' && (
             <div style={{ display: 'flex', justifyContent: 'space-between' }}>
               <span style={{ color: '#555' }}>M-Pesa Code</span>
-              <span style={{ fontWeight: 600 }}>{data.payment_transaction_code}</span>
+              {data.payment_transaction_code ? (
+                <span style={{ fontWeight: 600 }}>{data.payment_transaction_code}</span>
+              ) : (
+                <span style={{ color: '#999', fontStyle: 'italic', fontSize: 10 }}>Confirming...</span>
+              )}
             </div>
           )}
         </div>

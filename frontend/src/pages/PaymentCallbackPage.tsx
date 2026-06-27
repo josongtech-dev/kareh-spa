@@ -22,13 +22,14 @@ const isInIframe = (): boolean => window !== window.top;
 
 const PaymentCallbackPage = () => {
   const [searchParams] = useSearchParams();
-  const [status, setStatus] = useState<'checking' | 'completed' | 'failed'>('checking');
+  const [status, setStatus] = useState<'checking' | 'completed' | 'pending' | 'failed'>('checking');
   const [message, setMessage] = useState('Verifying payment...');
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
 
   useEffect(() => {
     const orderTrackingId = searchParams.get('order_tracking_id') || searchParams.get('OrderTrackingId') || '';
     const merchantReference = searchParams.get('merchant_reference') || searchParams.get('OrderMerchantReference') || '';
+    const statusParam = searchParams.get('status');
 
     if (!orderTrackingId) {
       setStatus('failed');
@@ -36,53 +37,46 @@ const PaymentCallbackPage = () => {
       return;
     }
 
-    let attempts = 0;
-    const maxAttempts = 20;
+    if (isInIframe()) return;
 
-    const checkStatus = async () => {
+    const fetchStatus = async () => {
       try {
         const res = await sessionsApi.checkPesapalStatus(orderTrackingId, merchantReference || undefined);
         const data = res?.data?.data;
         const desc = (data?.status || '').toLowerCase();
 
         if (desc === 'completed' || data?.payment_status === '1') {
-          if (isInIframe()) {
-            return;
-          }
-          if (data?.receipt) {
-            setReceiptData(data.receipt);
-          }
+          if (data?.receipt) setReceiptData(data.receipt);
           setStatus('completed');
           setMessage('Payment completed successfully!');
-          return;
-        }
-
-        if (desc === 'failed' || data?.payment_status === '3') {
-          if (isInIframe()) return;
+        } else if (desc === 'failed' || data?.payment_status === '3') {
           setStatus('failed');
           setMessage('Payment was not completed.');
-          return;
-        }
-
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(checkStatus, 2000);
         } else {
-          setStatus('failed');
-          setMessage('Payment verification timed out. Please check session status in admin.');
+          setStatus('pending');
+          setMessage('Your payment is being processed. You will receive a confirmation shortly.');
         }
       } catch {
-        attempts++;
-        if (attempts < maxAttempts) {
-          setTimeout(checkStatus, 2000);
+        if (statusParam === 'completed') {
+          setStatus('completed');
+          setMessage('Payment completed successfully!');
         } else {
-          setStatus('failed');
-          setMessage('Could not verify payment. Please check session status in admin.');
+          setStatus('pending');
+          setMessage('Your payment is being processed. You will receive a confirmation shortly.');
         }
       }
     };
 
-    checkStatus();
+    if (statusParam === 'failed') {
+      setStatus('failed');
+      setMessage('Payment was not completed.');
+    } else if (statusParam === 'pending') {
+      setMessage('Your payment is being processed...');
+      fetchStatus();
+    } else {
+      setMessage('Please wait...');
+      fetchStatus();
+    }
   }, [searchParams]);
 
   if (isInIframe()) {
@@ -97,7 +91,7 @@ const PaymentCallbackPage = () => {
             <div className="d-inline-flex align-items-center justify-content-center rounded-circle bg-warning bg-opacity-10 mb-4" style={{ width: 80, height: 80 }}>
               <FiLoader size={40} className="text-warning spinner-border" />
             </div>
-            <h4 className="fw-bold mb-2">Verifying Payment</h4>
+            <h4 className="fw-bold mb-2">Completing Payment</h4>
             <p className="text-secondary mb-4">{message}</p>
             <div className="progress rounded-pill" style={{ height: 6 }}>
               <div className="progress-bar progress-bar-striped progress-bar-animated bg-warning" style={{ width: '100%' }} />
@@ -122,6 +116,29 @@ const PaymentCallbackPage = () => {
           <div className="text-center mt-3 no-print" style={{ fontSize: 12, color: '#888' }}>
             <FiCheckCircle className="text-success me-1" size={14} />
             {message}
+          </div>
+        </div>
+      )}
+
+      {status === 'pending' && (
+        <div className="d-flex align-items-center justify-content-center min-vh-100">
+          <div className="card shadow-lg border-0 rounded-4 p-5 text-center" style={{ maxWidth: 480, width: '90%' }}>
+            <div className="d-inline-flex align-items-center justify-content-center rounded-circle bg-info bg-opacity-10 mb-4" style={{ width: 80, height: 80 }}>
+              <FiLoader size={40} className="text-info spinner-border" />
+            </div>
+            <h4 className="fw-bold mb-2">Payment Processing</h4>
+            <p className="text-secondary mb-4">{message}</p>
+            <div className="d-flex gap-2 justify-content-center">
+              <Link to="/" className="btn btn-outline-secondary rounded-pill px-4 py-2">
+                <FiArrowLeft className="me-1" /> Home
+              </Link>
+              <Link to="/booking" className="btn btn-purple rounded-pill px-4 py-2 fw-bold shadow-lg">
+                Book Again
+              </Link>
+            </div>
+            <p className="x-small text-muted mt-3 mb-0">
+              A confirmation will be sent once the payment is verified.
+            </p>
           </div>
         </div>
       )}

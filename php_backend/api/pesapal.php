@@ -85,6 +85,7 @@ function handleIPN(mysqli $conn) {
         if ($session) {
             $sessionModel = new Session($conn);
             $sessionId = intval($session['id']);
+            $billingStatus = strtolower((string)($session['billing_status'] ?? ''));
 
             if (($desc === 'completed' || $code === '1') && $paidAmount > 0) {
                 $expectedAmount = floatval($session['total_amount'] ?? 0);
@@ -112,7 +113,18 @@ function handleIPN(mysqli $conn) {
                 }
                 error_log("Pesapal IPN: Session $sessionId marked as paid (ref: $merchantReference)");
             } elseif ($desc === 'failed' || $code === '3') {
-                $sessionModel->failPesapalPayment($sessionId, $orderTrackingId);
+                if ($billingStatus === 'paid') {
+                    $sessionModel->logPaymentEvent($sessionId, 'critical_payment_reversal', [
+                        'payment_status_description' => $desc,
+                        'payment_status' => $code,
+                        'previous_billing_status' => $billingStatus,
+                        'note' => 'Session was confirmed via callback on PENDING but IPN reports failure',
+                    ], $orderTrackingId, $merchantReference);
+                    $sessionModel->revertPesapalPayment($sessionId);
+                    error_log("Pesapal IPN: CRITICAL — Session $sessionId was prematurely confirmed but payment FAILED. Reverting.");
+                } else {
+                    $sessionModel->failPesapalPayment($sessionId, $orderTrackingId);
+                }
                 $sessionModel->logPaymentEvent($sessionId, 'failed', [
                     'payment_status_description' => $desc,
                     'payment_status' => $code,
@@ -144,12 +156,20 @@ function handleCallback(mysqli $conn) {
     $orderTrackingId = $_GET['OrderTrackingId'] ?? '';
     $merchantReference = $_GET['OrderMerchantReference'] ?? '';
     $notificationType = $_GET['OrderNotificationType'] ?? '';
+    $frontendBase = rtrim(envValue('FRONTEND_BASE_URL', 'https://karehspa.co.ke'), '/');
 
     error_log("Pesapal Callback — TrackingId: $orderTrackingId, Ref: $merchantReference");
 
+    $session = resolveSession($conn, $merchantReference, $orderTrackingId);
+    $sessionId = $session ? intval($session['id']) : intval($_GET['session_id'] ?? 0);
+
     if ($orderTrackingId === '') {
-        http_response_code(400);
-        echo json_encode(['status' => 'error', 'message' => 'Missing OrderTrackingId']);
+        error_log("Pesapal Callback: Missing OrderTrackingId for session $sessionId");
+        if ($sessionId > 0) {
+            header('Location: ' . $frontendBase . '/admin/sessions?payment_status=error&session_id=' . $sessionId);
+        } else {
+            header('Location: ' . $frontendBase . '/payment/callback?status=error');
+        }
         exit;
     }
 
@@ -157,13 +177,33 @@ function handleCallback(mysqli $conn) {
         $gateway = new PesapalGateway();
         $token = $gateway->getAccessToken();
         if (!$token || empty($token->token)) {
-            echo json_encode(['status' => 'error', 'message' => 'Payment service unavailable']);
+            error_log("Pesapal Callback: getAccessToken failed for session $sessionId");
+            if ($sessionId > 0) {
+                header('Location: ' . $frontendBase . '/admin/sessions?payment_status=pending&session_id=' . $sessionId);
+            } else {
+                header('Location: ' . $frontendBase . '/payment/callback?order_tracking_id=' . urlencode($orderTrackingId) . '&status=pending');
+            }
             exit;
         }
 
-        $status = $gateway->getTransactionStatus($token->token, $orderTrackingId);
+        $status = null;
+        $maxRetries = 3;
+        for ($attempt = 1; $attempt <= $maxRetries; $attempt++) {
+            $status = $gateway->getTransactionStatus($token->token, $orderTrackingId);
+            if ($status) break;
+            if ($attempt < $maxRetries) {
+                error_log("Pesapal Callback: GetTransactionStatus attempt $attempt failed for session $sessionId, retrying...");
+                sleep(1);
+            }
+        }
+
         if (!$status) {
-            echo json_encode(['status' => 'error', 'message' => 'Unable to verify payment status']);
+            error_log("Pesapal Callback: GetTransactionStatus failed after $maxRetries attempts for session $sessionId");
+            if ($sessionId > 0) {
+                header('Location: ' . $frontendBase . '/admin/sessions?payment_status=pending&session_id=' . $sessionId);
+            } else {
+                header('Location: ' . $frontendBase . '/payment/callback?order_tracking_id=' . urlencode($orderTrackingId) . '&status=pending');
+            }
             exit;
         }
 
@@ -173,13 +213,13 @@ function handleCallback(mysqli $conn) {
         $paidAmount = floatval($status->amount ?? 0);
         $paidCurrency = strtoupper((string)($status->currency ?? 'KES'));
 
-        $session = resolveSession($conn, $merchantReference, $orderTrackingId);
+        $paymentConfirmed = false;
+        $paymentFailed = false;
 
         if ($session) {
             $sessionModel = new Session($conn);
-            $sessionId = intval($session['id']);
 
-            if (($desc === 'completed' || $code === '1') && $paidAmount > 0) {
+            if (($desc === 'completed' || $code === '1' || $desc === 'pending') && $paidAmount > 0) {
                 $expectedAmount = floatval($session['total_amount'] ?? 0);
 
                 if (abs($paidAmount - $expectedAmount) > 0.01) {
@@ -203,6 +243,7 @@ function handleCallback(mysqli $conn) {
                 if (is_array($confirmed) && !empty($confirmed['client_email'])) {
                     AppointmentMailer::sendPaymentReceived($confirmed);
                 }
+                $paymentConfirmed = true;
                 error_log("Pesapal Callback: Session $sessionId marked as paid");
             } elseif ($desc === 'failed' || $code === '3') {
                 $sessionModel->failPesapalPayment($sessionId, $orderTrackingId);
@@ -210,6 +251,7 @@ function handleCallback(mysqli $conn) {
                     'payment_status_description' => $desc,
                     'payment_status' => $code,
                 ], $orderTrackingId, $merchantReference);
+                $paymentFailed = true;
                 error_log("Pesapal Callback: Session $sessionId marked as failed");
             } else {
                 $sessionModel->logPaymentEvent($sessionId, 'callback_received', [
@@ -220,17 +262,31 @@ function handleCallback(mysqli $conn) {
             }
         }
 
-        $frontendBase = rtrim(envValue('FRONTEND_BASE_URL', 'https://karehspa.co.ke'), '/');
-        $redirectUrl = $frontendBase . '/payment/callback?order_tracking_id=' . urlencode($orderTrackingId)
-            . '&merchant_reference=' . urlencode($merchantReference)
-            . '&status=' . urlencode($desc);
+        if ($sessionId > 0) {
+            if ($paymentConfirmed) {
+                $adminStatus = 'success';
+            } elseif ($paymentFailed) {
+                $adminStatus = 'failed';
+            } else {
+                $adminStatus = 'pending';
+            }
+            $redirectUrl = $frontendBase . '/admin/sessions?payment_status=' . urlencode($adminStatus)
+                . '&session_id=' . $sessionId;
+        } else {
+            $redirectUrl = $frontendBase . '/payment/callback?order_tracking_id=' . urlencode($orderTrackingId)
+                . '&merchant_reference=' . urlencode($merchantReference)
+                . '&status=' . urlencode($desc);
+        }
 
         header('Location: ' . $redirectUrl);
         exit;
     } catch (\Throwable $e) {
         error_log('Pesapal callback error: ' . $e->getMessage());
-        http_response_code(500);
-        echo json_encode(['status' => 'error', 'message' => 'Payment verification failed']);
+        if ($sessionId > 0) {
+            header('Location: ' . $frontendBase . '/admin/sessions?payment_status=pending&session_id=' . $sessionId);
+        } else {
+            header('Location: ' . $frontendBase . '/payment/callback?status=pending');
+        }
         exit;
     }
 }
@@ -313,7 +369,7 @@ function checkTransactionStatus(mysqli $conn) {
         $confirmationCode = $status->confirmation_code ?? '';
 
         $receipt = null;
-        if ($session && $sessionId && ($desc === 'completed' || $code === '1') && floatval($status->amount ?? 0) > 0) {
+        if ($session && $sessionId && ($desc === 'completed' || $code === '1' || $desc === 'pending') && floatval($status->amount ?? 0) > 0) {
             $confirmed = $sessionModel->confirmPesapalPayment($sessionId, $orderTrackingId, $confirmationCode);
             $sessionModel->logPaymentEvent($sessionId, 'confirmed', [
                 'payment_status_description' => $desc,

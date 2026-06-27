@@ -373,7 +373,7 @@ class SessionController extends BaseController {
 
             $sessionData = $initData['session'];
             $frontendBase = rtrim(envValue('FRONTEND_BASE_URL', 'https://karehspa.co.ke'), '/');
-            $callbackUrl = $frontendBase . '/payment/callback';
+            $callbackUrl = $frontendBase . '/php_backend/api/pesapal.php?action=callback&session_id=' . $sessionId;
 
             $billingAddress = [
                 'email_address' => $sessionData['client_email'] ?: 'noreply@karehspa.co.ke',
@@ -534,7 +534,7 @@ class SessionController extends BaseController {
             $code = $statusResult->payment_status ?? '';
             $confirmationCode = $statusResult->confirmation_code ?? '';
 
-            if ($desc === 'completed' || $code === '1') {
+            if ($desc === 'completed' || $code === '1' || $desc === 'pending') {
                 $confirmed = $this->sessionModel->confirmPesapalPayment($sessionId, $orderTrackingId, $confirmationCode);
                 $this->sessionModel->logPaymentEvent($sessionId, 'confirmed', [
                     'payment_status_description' => $desc,
@@ -559,8 +559,6 @@ class SessionController extends BaseController {
                     'payment_status' => $code,
                 ], $orderTrackingId);
                 Response::json(['status' => 'failed', 'message' => 'Payment failed']);
-            } elseif ($desc === 'pending' || $code === '2') {
-                Response::json(['status' => 'pending', 'message' => 'Awaiting payment confirmation']);
             } else {
                 Response::json(['status' => 'pending', 'message' => 'Payment status: ' . ($statusResult->payment_status_description ?? 'unknown')]);
             }

@@ -439,11 +439,22 @@ class Session extends BaseModel {
             $session = $this->getById($sessionId);
             if (!$session) throw new Exception('Session not found.');
             if (strtolower((string)($session['billing_status'] ?? '')) === 'paid') {
+                if ($confirmationCode && empty($session['payment_transaction_code'])) {
+                    $updateStmt = $this->conn->prepare(
+                        "UPDATE {$this->table} SET payment_transaction_code = ? WHERE id = ? AND payment_transaction_code IS NULL"
+                    );
+                    if ($updateStmt) {
+                        $updateStmt->bind_param("si", $confirmationCode, $sessionId);
+                        $updateStmt->execute();
+                    }
+                }
                 $this->conn->commit();
-                return $session;
+                return $this->getSessionNotificationData($sessionId) ?: $session;
             }
 
             $carryMethod = $paymentMethod ?: ($session['pesapal_payment_method'] ?? null);
+
+            $code = $confirmationCode ?: null;
 
             $query = "UPDATE {$this->table}
                       SET billing_status = 'paid',
@@ -455,7 +466,6 @@ class Session extends BaseModel {
             $stmt = $this->conn->prepare($query);
             if (!$stmt) throw new Exception('Failed to prepare payment confirmation.');
 
-            $code = $confirmationCode ?: $orderTrackingId;
             $stmt->bind_param("sssi", $code, $orderTrackingId, $carryMethod, $sessionId);
             if (!$stmt->execute()) throw new Exception($stmt->error);
 
@@ -481,6 +491,18 @@ class Session extends BaseModel {
         $stmt = $this->conn->prepare($query);
         if (!$stmt) return false;
         $stmt->bind_param("si", $orderTrackingId, $sessionId);
+        return $stmt->execute();
+    }
+
+    public function revertPesapalPayment($sessionId) {
+        $query = "UPDATE {$this->table}
+                  SET billing_status = 'failed',
+                      paid_at = NULL,
+                      payment_transaction_code = NULL
+                  WHERE id = ? AND billing_status = 'paid'";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return false;
+        $stmt->bind_param("i", $sessionId);
         return $stmt->execute();
     }
 
