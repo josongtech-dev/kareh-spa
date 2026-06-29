@@ -17,11 +17,25 @@ class ServiceController extends BaseController {
         $method = $_SERVER['REQUEST_METHOD'];
         $id = isset($_GET['id']) ? intval($_GET['id']) : null;
         $resource = isset($_GET['resource']) ? trim((string) $_GET['resource']) : '';
+        $action = isset($_GET['action']) ? trim((string) $_GET['action']) : '';
+
+        if ($id === null || $action === '' || $resource === '') {
+            $body = $this->getBody();
+            if ($id === null && isset($body['id'])) $id = intval($body['id']);
+            if ($action === '' && isset($body['action'])) $action = trim((string)$body['action']);
+            if ($resource === '' && isset($body['resource'])) $resource = trim((string)$body['resource']);
+            // Also check $_POST for multipart form data (uploads send id in FormData)
+            if ($id === null && isset($_POST['id'])) $id = intval($_POST['id']);
+            if ($action === '' && isset($_POST['action'])) $action = trim((string)$_POST['action']);
+            if ($resource === '' && isset($_POST['resource'])) $resource = trim((string)$_POST['resource']);
+        }
 
         switch ($method) {
             case 'GET':
                 if ($resource === 'categories') {
                     $this->getServiceCategories();
+                } elseif ($resource === 'linked-products' && $id) {
+                    $this->getLinkedProducts($id);
                 } elseif ($id) {
                     $this->getService($id);
                 } else {
@@ -31,7 +45,8 @@ class ServiceController extends BaseController {
             case 'POST':
                 if ($resource === 'categories') {
                     $this->createServiceCategory();
-                // Multipart updates (file upload) use POST ?id= like staff.php — JSON updates still use PUT.
+                } elseif ($action === 'link-products' && $id) {
+                    $this->setLinkedProducts($id);
                 } elseif ($id) {
                     $this->updateService($id);
                 } else {
@@ -92,7 +107,7 @@ class ServiceController extends BaseController {
         if (!empty($_POST)) {
             return $_POST;
         }
-        $json = $this->getPostData();
+        $json = $this->getBody();
         return is_array($json) ? $json : [];
     }
 
@@ -270,6 +285,24 @@ class ServiceController extends BaseController {
             return 'uploads/services/' . $file_name;
         }
         return false;
+    }
+
+    private function getLinkedProducts($id) {
+        $products = $this->serviceModel->getLinkedProducts($id);
+        Response::json($products);
+    }
+
+    private function setLinkedProducts($id) {
+        $data = $this->getBody();
+        if (!$data || !isset($data['products'])) {
+            Response::error('Products array is required', 400);
+        }
+        if ($this->serviceModel->setLinkedProducts($id, $data['products'])) {
+            ActivityLogger::logFromAuthData($this->conn, 'service', 'link_products', "Updated linked products for service #{$id}", null, 'service', $id);
+            Response::json(['message' => 'Linked products updated']);
+        } else {
+            Response::error('Failed to update linked products', 500);
+        }
     }
 
     private function deleteService($id) {

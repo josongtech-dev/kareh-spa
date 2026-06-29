@@ -234,7 +234,7 @@ const ExpensesManagementPage: React.FC = () => {
                         </button>
                       </li>
                     )}
-                    {fullAccess && (
+                    {fullAccess && exp.status !== 'confirmed' && (
                       <>
                         <li>
                           <button

@@ -16,6 +16,12 @@ class OfferController extends BaseController {
     public function handleRequest() {
         $method = $_SERVER['REQUEST_METHOD'];
         $id = isset($_GET['id']) ? intval($_GET['id']) : null;
+
+        if ($id === null) {
+            $body = $this->getBody();
+            if (isset($body['id'])) $id = intval($body['id']);
+        }
+
         switch ($method) {
             case 'GET':
                 if ($id) {
@@ -41,8 +47,7 @@ class OfferController extends BaseController {
     }
 
     private function body() {
-        $data = json_decode(file_get_contents("php://input"), true);
-        return is_array($data) ? $data : [];
+        return $this->getBody();
     }
 
     private function getAll() {

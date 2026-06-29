@@ -180,6 +180,108 @@ class Appointment extends BaseModel {
         return $data;
     }
 
+    public function getConflictingAppointments($date, $time, $staffId = null, $excludeId = null) {
+        $conditions = ['a.appointment_date = ?', 'a.appointment_time = ?'];
+        $params = [$date, $time];
+        $types = 'ss';
+
+        if ($staffId !== null && intval($staffId) > 0) {
+            $conditions[] = '(a.staff_id = ? OR a.staff_id IS NULL)';
+            $params[] = intval($staffId);
+            $types .= 'i';
+        }
+
+        if ($excludeId !== null && intval($excludeId) > 0) {
+            $conditions[] = 'a.id != ?';
+            $params[] = intval($excludeId);
+            $types .= 'i';
+        }
+
+        $conditions[] = "a.status NOT IN ('cancelled')";
+
+        $where = 'WHERE ' . implode(' AND ', $conditions);
+
+        $query = "SELECT a.id, a.appointment_code, a.customer_name, a.staff_id,
+                         st.name as staff_name, a.appointment_date, a.appointment_time, a.status
+                  FROM {$this->table} a
+                  LEFT JOIN staffs st ON a.staff_id = st.id
+                  {$where}
+                  LIMIT 5";
+
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return [];
+
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        $conflicts = [];
+        if ($result) {
+            while ($row = $result->fetch_assoc()) {
+                $conflicts[] = $row;
+            }
+        }
+        $stmt->close();
+        return $conflicts;
+    }
+
+    public function getByDateRange($dateFrom, $dateTo, $staffId = null) {
+        $conditions = [];
+        $params = [];
+        $types = '';
+
+        $conditions[] = 'a.appointment_date BETWEEN ? AND ?';
+        $params[] = $dateFrom;
+        $params[] = $dateTo;
+        $types .= 'ss';
+
+        if ($staffId !== null && intval($staffId) > 0) {
+            $conditions[] = 'a.staff_id = ?';
+            $params[] = intval($staffId);
+            $types .= 'i';
+        }
+
+        $where = 'WHERE ' . implode(' AND ', $conditions);
+
+        $query = "SELECT a.*, s.name as service_name, st.name as staff_name,
+                         ses.id as session_id, ses.session_code,
+                         CASE WHEN ses.id IS NOT NULL THEN 'Created'
+                              ELSE NULL END as session_status
+                  FROM {$this->table} a
+                  LEFT JOIN services s ON a.service_id = s.id
+                  LEFT JOIN staffs st ON a.staff_id = st.id
+                  LEFT JOIN sessions ses ON ses.appointment_id = a.id
+                  {$where}
+                  ORDER BY a.appointment_date ASC, a.appointment_time ASC";
+
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return [];
+
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $result = $stmt->get_result();
+
+        $data = [];
+        $ids = [];
+        if ($result) {
+            while ($row = $result->fetch_assoc()) {
+                $data[] = $row;
+                $ids[] = intval($row['id'] ?? 0);
+            }
+        }
+        $stmt->close();
+        $serviceItemsMap = $this->fetchServiceItemsByAppointmentIds($ids);
+        foreach ($data as &$row) {
+            $aid = intval($row['id'] ?? 0);
+            $items = $serviceItemsMap[$aid] ?? [];
+            $row['service_items'] = $items;
+            if (!empty($items)) {
+                $row['service_name'] = $this->buildServiceSummary($items, (string)($row['service_name'] ?? ''));
+            }
+        }
+        return $data;
+    }
+
     public function getByCustomerEmail($email) {
         $email = strtolower(trim($email));
         if ($email === '') return [];

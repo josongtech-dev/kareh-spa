@@ -16,6 +16,12 @@ class CommissionRuleController extends BaseController {
         $id = isset($_GET['id']) ? intval($_GET['id']) : null;
         $action = isset($_GET['action']) ? trim((string)$_GET['action']) : '';
 
+        if ($id === null || $action === '') {
+            $body = $this->getBody();
+            if ($id === null && isset($body['id'])) $id = intval($body['id']);
+            if ($action === '' && isset($body['action'])) $action = trim((string)$body['action']);
+        }
+
         if ($method === 'GET') {
             if ($id) {
                 $row = $this->model->getById($id);
@@ -41,7 +47,7 @@ class CommissionRuleController extends BaseController {
                 }
                 Response::error('Failed to set default rule', 500);
             }
-            $data = $this->getPostData() ?: $_POST;
+            $data = $this->getBody();
             $newId = $this->model->create($data);
             if ($newId) {
                 $created = $this->model->getById($newId);
@@ -52,7 +58,7 @@ class CommissionRuleController extends BaseController {
         }
 
         if ($method === 'PUT' && $id) {
-            $data = $this->getPostData() ?: $_POST;
+            $data = $this->getBody();
             if ($this->model->update($id, $data)) {
                 Response::json(['message' => 'Commission rule updated', 'rule' => $this->model->getById($id)]);
             }

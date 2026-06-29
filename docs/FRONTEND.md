@@ -33,6 +33,8 @@ frontend/src/
 ├── api/                      ← 18 API client modules (one per resource)
 │   ├── axiosInstance.ts      ← Axios + auth interceptor
 │   ├── config.ts             ← API base URL
+│   ├── invoice.ts            ← Invoice data + API
+│   ├── rewards.ts            ← Loyalty rewards + redemption
 │   └── *.ts                  ← Per-resource API functions
 ├── components/               ← Shared UI components
 │   ├── Navbar.tsx
@@ -46,18 +48,18 @@ frontend/src/
 │       ├── ConfirmModal.tsx
 │       ├── FeedbackModal.tsx
 │       └── SuccessModal.tsx
-├── pages/                    ← Route page components (27)
+├── pages/                    ← Route page components (29)
 │   ├── HomePage.tsx          ← /
 │   ├── AboutPage.tsx         ← /about
 │   ├── ServicesPage.tsx      ← /services
 │   ├── GalleryPage.tsx       ← /gallery
-│   ├── BookingPage.tsx       ← /book
+│   ├── BookingPage.tsx       ← /book (includes availability slot picker)
 │   ├── ManageAppointmentPage.tsx  ← /manage-appointment?token=
 │   ├── SessionFeedbackPage.tsx    ← /session-feedback?token=
 │   ├── RegisterPage.tsx      ← /register
 │   ├── UserLoginPage.tsx     ← /login
 │   ├── member/               ← /member/* (5 pages)
-│   └── admin/                ← /admin/* (16 pages)
+│   └── admin/                ← /admin/* (17 pages incl. ProfilePage)
 └── assets/                   ← Media files
 ```
 
@@ -109,6 +111,7 @@ frontend/src/
 | `/admin/feedback` | FeedbackManagementPage | Owner, Manager |
 | `/admin/settings` | SettingsPage | Owner |
 | `/admin/analytics` | AnalyticsPage | Owner, Manager |
+| `/admin/profile` | ProfilePage | All staff |
 | `/admin/add-admin` | AddAdminPage | Owner |
 
 ---
@@ -200,7 +203,7 @@ export const sessionsApi = {
 ```
 
 **Known pattern:** Most modules lack typed interfaces — returns `any`.
-**Notable exception:** `commissionRules.ts` and `dashboard.ts` have typed returns.
+**Notable exceptions:** `commissionRules.ts`, `dashboard.ts`, `invoice.ts`, `rewards.ts`
 
 ---
 
@@ -263,11 +266,10 @@ window.addEventListener('SERVICE_CATALOG_UPDATED_EVENT', handler);
 | Token/user data in localStorage (XSS-vulnerable) | High |
 | 401 clears ALL tokens (no isolation) | High |
 | Products page silently swallows API errors | High |
-| Dashboard action buttons are dead UI (no onClick) | High |
 | No 404 page (unrecognized routes → HomePage) | Medium |
 | 2-second polling for service catalog in Sessions page | Medium |
 | Duplicated service selection UI across Booking + Appointments | Medium |
 | No loading skeletons for data fetches | Medium |
 | "Remember Me" and "Forgot Password" are non-functional | Medium |
-| `window.location.href` used instead of `useNavigate` | Medium |
+| `window.location.href` used instead of `useNavigate` in some places | Medium |
 | No Escape key handler / focus trap in AdminModal | Medium |

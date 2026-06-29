@@ -1,5 +1,6 @@
-import { useRef } from 'react';
+import { useRef, useCallback, useState } from 'react';
 import { FiPrinter, FiDownload, FiShare2 } from 'react-icons/fi';
+import { generateInvoicePdf } from '../utils/generateInvoicePdf';
 
 interface ReceiptLine {
   id: number;
@@ -45,14 +46,61 @@ const formatDate = (d: string): string => {
   }
 };
 
+const buildInvoiceData = (data: ReceiptData) => ({
+  session_id: data.session_id,
+  session_code: data.session_code,
+  customer_name: data.customer_name,
+  client_phone: data.client_phone || '',
+  client_email: data.client_email || '',
+  service_lines: (data.service_lines || []).map((l) => ({
+    id: l.id,
+    service_name: l.service_name,
+    price: typeof l.price === 'string' ? parseFloat(l.price) : (l.price || 0),
+    quantity: l.quantity || 1,
+    line_total: typeof l.line_total === 'string' ? parseFloat(l.line_total) : (l.line_total || 0),
+  })),
+  addon_lines: (data.addon_lines || []).map((l) => ({
+    id: l.id,
+    addon_name: l.addon_name,
+    price: typeof l.price === 'string' ? parseFloat(l.price) : (l.price || 0),
+    quantity: l.quantity || 1,
+    line_total: typeof l.line_total === 'string' ? parseFloat(l.line_total) : (l.line_total || 0),
+  })),
+  subtotal: data.total_amount,
+  discount_amount: 0,
+  total_amount: data.total_amount,
+  payment_method: data.payment_method,
+  payment_transaction_code: data.payment_transaction_code,
+  billing_status: data.payment_transaction_code ? 'paid' : 'unpaid',
+  paid_at: data.paid_at,
+  created_at: data.paid_at,
+  business: {
+    name: "Kareh's Spa",
+    tagline: 'Beauty & Wellness',
+    address: 'Nairobi, Kenya',
+    phone: '+254 700 000 000',
+    email: 'info@karehspa.co.ke',
+    website: 'karehspa.co.ke',
+  },
+});
+
 const Receipt: React.FC<ReceiptProps> = ({ data }) => {
   const printRef = useRef<HTMLDivElement>(null);
+  const [downloading, setDownloading] = useState(false);
 
   const handlePrint = () => window.print();
 
-  const handleDownloadPdf = () => {
-    window.print();
-  };
+  const handleDownloadPdf = useCallback(async () => {
+    setDownloading(true);
+    try {
+      await generateInvoicePdf(buildInvoiceData(data));
+    } catch (err) {
+      console.error('PDF generation failed:', err);
+      window.print();
+    } finally {
+      setDownloading(false);
+    }
+  }, [data]);
 
   const handleShare = async () => {
     const lines = data.service_lines.map((l: ReceiptLine) =>
@@ -101,8 +149,8 @@ const Receipt: React.FC<ReceiptProps> = ({ data }) => {
           <button className="btn btn-outline-dark rounded-pill px-3 py-2 d-flex align-items-center gap-2" onClick={handlePrint}>
             <FiPrinter size={16} /> Print
           </button>
-          <button className="btn btn-outline-dark rounded-pill px-3 py-2 d-flex align-items-center gap-2" onClick={handleDownloadPdf}>
-            <FiDownload size={16} /> PDF
+          <button className="btn btn-outline-dark rounded-pill px-3 py-2 d-flex align-items-center gap-2" onClick={handleDownloadPdf} disabled={downloading}>
+            <FiDownload size={16} /> {downloading ? 'Generating...' : 'PDF'}
           </button>
           <button className="btn btn-outline-dark rounded-pill px-3 py-2 d-flex align-items-center gap-2" onClick={handleShare}>
             <FiShare2 size={16} /> Share

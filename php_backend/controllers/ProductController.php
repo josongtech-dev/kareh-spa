@@ -17,6 +17,12 @@ class ProductController extends BaseController {
         $id = isset($_GET['id']) ? intval($_GET['id']) : null;
         $action = isset($_GET['action']) ? trim($_GET['action']) : '';
 
+        if ($id === null || $action === '') {
+            $body = $this->getBody();
+            if ($id === null && isset($body['id'])) $id = intval($body['id']);
+            if ($action === '' && isset($body['action'])) $action = trim((string)$body['action']);
+        }
+
         switch ($method) {
             case 'GET':
                 if ($action === 'velocity') {
@@ -75,8 +81,7 @@ class ProductController extends BaseController {
     }
 
     private function createProduct() {
-        $data = json_decode(file_get_contents("php://input"), true);
-        if (!$data) $data = $_POST;
+        $data = $this->getBody();
 
         if (empty($data['name'])) {
             Response::error('Name is required', 400);
@@ -118,8 +123,7 @@ class ProductController extends BaseController {
     }
 
     private function updateProduct($id) {
-        $data = json_decode(file_get_contents("php://input"), true);
-        if (!$data) $data = $_POST;
+        $data = $this->getBody();
 
         $existing = $this->productModel->getById($id);
         if (!$existing) {
@@ -195,8 +199,7 @@ class ProductController extends BaseController {
     }
 
     private function restockProduct($id) {
-        $data = json_decode(file_get_contents("php://input"), true);
-        if (!$data) $data = $_POST;
+        $data = $this->getBody();
 
         $quantity = floatval($data['quantity'] ?? 0);
         $amount = floatval($data['amount'] ?? 0);
@@ -260,8 +263,7 @@ class ProductController extends BaseController {
     }
 
     private function consumeProduct($id) {
-        $data = json_decode(file_get_contents("php://input"), true);
-        if (!$data) $data = $_POST;
+        $data = $this->getBody();
 
         $quantity = floatval($data['quantity'] ?? 0);
         $notes = isset($data['notes']) ? trim((string)$data['notes']) : null;

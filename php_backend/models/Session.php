@@ -4,9 +4,25 @@ require_once __DIR__ . '/BaseModel.php';
 class Session extends BaseModel {
     protected $table = 'sessions';
     private $lastError = null;
-
+    private $hasOfferDiscountColumn = null;
+    
     private function normalizeAmount($value) {
         return floatval(str_replace(',', '', (string) $value));
+    }
+
+    private function sessionHasOfferDiscountColumn() {
+        if ($this->hasOfferDiscountColumn !== null) {
+            return $this->hasOfferDiscountColumn;
+        }
+        $query = "SELECT COUNT(*) AS c
+                  FROM information_schema.COLUMNS
+                  WHERE TABLE_SCHEMA = DATABASE()
+                    AND TABLE_NAME = 'sessions'
+                    AND COLUMN_NAME = 'offer_discount_amount'";
+        $result = $this->conn->query($query);
+        $row = $result ? $result->fetch_assoc() : null;
+        $this->hasOfferDiscountColumn = intval($row['c'] ?? 0) > 0;
+        return $this->hasOfferDiscountColumn;
     }
 
     private function entityExists($table, $id) {
@@ -21,51 +37,403 @@ class Session extends BaseModel {
         return $result && $result->num_rows > 0;
     }
 
-    private function recalculateSessionTotal($sessionId) {
-        $servicesTotal = 0;
-        $sumQuery = "SELECT COALESCE(SUM(price), 0) AS total FROM session_services WHERE session_id = ?";
-        $sumStmt = $this->conn->prepare($sumQuery);
-        if ($sumStmt) {
-            $sumStmt->bind_param("i", $sessionId);
-            $sumStmt->execute();
-            $sumRes = $sumStmt->get_result();
-            $sumRow = $sumRes ? $sumRes->fetch_assoc() : null;
-            $servicesTotal = floatval($sumRow['total'] ?? 0);
+    private function getServiceLineStatusFromSessionStatus($sessionStatus) {
+        if ($sessionStatus === 'Completed') return 'completed';
+        if ($sessionStatus === 'Voided') return 'voided';
+        if ($sessionStatus === 'In Progress' || $sessionStatus === 'Finalizing') return 'in_progress';
+        return 'pending';
+    }
+
+    private function sanitizeBillingStatus($status) {
+        $allowed = ['unbilled', 'payment_requested', 'paid'];
+        $status = strtolower(trim((string)$status));
+        return in_array($status, $allowed, true) ? $status : 'unbilled';
+    }
+
+    private function calculateDiscountAmount($subtotal, $discountType, $discountValue) {
+        $subtotal = max(0, floatval($subtotal));
+        $discountValue = max(0, floatval($discountValue));
+        if ($discountType === 'percent') {
+            $discountValue = min($discountValue, 100);
+            return ($subtotal * $discountValue) / 100;
         }
+        return min($discountValue, $subtotal);
+    }
 
-        $addonsTotal = 0;
-        $addonRows = $this->getAddonLinesRaw($sessionId);
-        foreach ($addonRows as $a) {
-            $qty = intval($a['quantity'] ?? 1);
-            $matPrice = floatval($a['material_price'] ?? 0);
-            $labPrice = floatval($a['labour_price'] ?? 0);
-            $bulkLabPrice = isset($a['bulk_labour_price']) ? floatval($a['bulk_labour_price']) : null;
-            $bulkAfter = isset($a['bulk_after']) ? intval($a['bulk_after']) : null;
+    private function calculatePayableTotal($subtotal, $discountType, $discountValue) {
+        $discountAmount = $this->calculateDiscountAmount($subtotal, $discountType, $discountValue);
+        return max(0, floatval($subtotal) - $discountAmount);
+    }
 
-            $materialTotal = $matPrice * $qty;
-
-            if ($bulkAfter !== null && $bulkLabPrice !== null && $qty > $bulkAfter) {
-                $labourTotal = ($labPrice * $bulkAfter) + ($bulkLabPrice * ($qty - $bulkAfter));
+    private function calculateOfferDiscountForServiceLine($linePrice, $offers) {
+        $price = max(0, floatval($linePrice));
+        if ($price <= 0 || !is_array($offers) || empty($offers)) return 0;
+        $best = 0.0;
+        foreach ($offers as $offer) {
+            $type = strtolower(trim((string)($offer['discount_type'] ?? 'percent')));
+            $value = floatval($offer['discount_value'] ?? 0);
+            if ($value <= 0) continue;
+            $discount = 0.0;
+            if ($type === 'amount') {
+                $discount = min($value, $price);
             } else {
-                $labourTotal = $labPrice * $qty;
+                $discount = ($price * min(100, max(0, $value))) / 100;
             }
-
-            $addonsTotal += $materialTotal + $labourTotal;
+            if ($discount > $best) $best = $discount;
         }
+        return round($best, 2);
+    }
 
-        $total = $servicesTotal + $addonsTotal;
-        $updateStmt = $this->conn->prepare("UPDATE {$this->table} SET total_amount = ? WHERE id = ?");
+    private function getActiveOffersByServiceId($serviceIds, $atDate = null) {
+        $ids = array_values(array_unique(array_map('intval', is_array($serviceIds) ? $serviceIds : [])));
+        $ids = array_values(array_filter($ids, function ($id) { return $id > 0; }));
+        if (empty($ids)) return [];
+        $when = trim((string)($atDate ?? ''));
+        if ($when === '') $when = date('Y-m-d H:i:s');
+
+        $placeholders = implode(',', array_fill(0, count($ids), '?'));
+        $query = "SELECT o.id, o.discount_type, o.discount_value, os.service_id
+                  FROM service_offers o
+                  INNER JOIN service_offer_services os ON os.offer_id = o.id
+                  WHERE o.status = 'Active'
+                    AND (o.starts_at IS NULL OR o.starts_at <= ?)
+                    AND (o.ends_at IS NULL OR o.ends_at >= ?)
+                    AND os.service_id IN ($placeholders)";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return [];
+        $types = 'ss' . str_repeat('i', count($ids));
+        $params = array_merge([$when, $when], $ids);
+        $stmt->bind_param($types, ...$params);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $map = [];
+        while ($res && ($row = $res->fetch_assoc())) {
+            $sid = intval($row['service_id'] ?? 0);
+            if (!isset($map[$sid])) $map[$sid] = [];
+            $map[$sid][] = $row;
+        }
+        return $map;
+    }
+
+    private function calculateSessionOfferDiscount($sessionId, $atDate = null) {
+        $lines = $this->getServiceLines($sessionId);
+        $activeLines = array_values(array_filter($lines, function ($line) {
+            return strtolower((string)($line['status'] ?? '')) !== 'voided';
+        }));
+        if (empty($activeLines)) return 0.0;
+        $serviceIds = array_map(function ($line) { return intval($line['service_id'] ?? 0); }, $activeLines);
+        $offersByService = $this->getActiveOffersByServiceId($serviceIds, $atDate);
+        $offerDiscount = 0.0;
+        foreach ($activeLines as $line) {
+            $sid = intval($line['service_id'] ?? 0);
+            $linePrice = floatval($line['price'] ?? 0);
+            $offerDiscount += $this->calculateOfferDiscountForServiceLine($linePrice, $offersByService[$sid] ?? []);
+        }
+        return round($offerDiscount, 2);
+    }
+
+    private function recalculateSessionAmountsExcludingVoided($sessionId) {
+        $sumQuery = "SELECT COALESCE(SUM(price), 0) AS subtotal
+                     FROM session_services
+                     WHERE session_id = ?
+                       AND status <> 'voided'";
+        $sumStmt = $this->conn->prepare($sumQuery);
+        if (!$sumStmt) return false;
+        $sumStmt->bind_param("i", $sessionId);
+        $sumStmt->execute();
+        $sumRes = $sumStmt->get_result();
+        $sumRow = $sumRes ? $sumRes->fetch_assoc() : null;
+        $subtotal = floatval($sumRow['subtotal'] ?? 0);
+
+        $snap = $this->getSessionBillingSnapshot($sessionId);
+        if (!$snap) return false;
+        $discountType = ($snap['discount_type'] ?? 'amount') === 'percent' ? 'percent' : 'amount';
+        $discountValue = floatval($snap['discount_value'] ?? 0);
+        $manualDiscountAmount = $this->calculateDiscountAmount($subtotal, $discountType, $discountValue);
+        $offerDiscountAmount = $this->calculateSessionOfferDiscount($sessionId);
+        $discountAmount = min($subtotal, $manualDiscountAmount + $offerDiscountAmount);
+        $payable = max(0, $subtotal - $discountAmount);
+
+        $updateQuery = $this->sessionHasOfferDiscountColumn()
+            ? "UPDATE {$this->table}
+               SET billing_subtotal = ?, offer_discount_amount = ?, discount_amount = ?, total_amount = ?
+               WHERE id = ?"
+            : "UPDATE {$this->table}
+               SET billing_subtotal = ?, discount_amount = ?, total_amount = ?
+               WHERE id = ?";
+        $updateStmt = $this->conn->prepare($updateQuery);
         if (!$updateStmt) return false;
-        $updateStmt->bind_param("di", $total, $sessionId);
+        if ($this->sessionHasOfferDiscountColumn()) {
+            $updateStmt->bind_param("ddddi", $subtotal, $offerDiscountAmount, $discountAmount, $payable, $sessionId);
+        } else {
+            $updateStmt->bind_param("dddi", $subtotal, $discountAmount, $payable, $sessionId);
+        }
         return $updateStmt->execute();
+    }
+
+    private function getSessionBillingSnapshot($sessionId) {
+        $query = "SELECT id, status, billing_status, billing_subtotal, discount_type, discount_value, total_amount
+                  FROM {$this->table}
+                  WHERE id = ?
+                  LIMIT 1";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return null;
+        $stmt->bind_param("i", $sessionId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $row = $res ? $res->fetch_assoc() : null;
+        if (!$row) return null;
+        $row['billing_status'] = $this->sanitizeBillingStatus($row['billing_status'] ?? 'unbilled');
+        return $row;
     }
 
     private function enrichSessionRowWithServiceLines($row) {
         if (!$row || !isset($row['id'])) return $row;
+
         $sessionId = intval($row['id']);
-        $row['service_lines'] = $this->getServiceLines($sessionId);
+        $serviceLines = $this->getServiceLines($sessionId);
+        $row['service_lines'] = $serviceLines;
+
+        // Keep "additional_services" as add-ons only (exclude just one primary line instance).
+        $additionalServices = $serviceLines;
+        $primaryServiceId = intval($row['service_id'] ?? 0);
+        if ($primaryServiceId > 0) {
+            $primaryIndex = null;
+            foreach ($additionalServices as $idx => $line) {
+                if (intval($line['service_id'] ?? 0) === $primaryServiceId) {
+                    $primaryIndex = $idx;
+                    break;
+                }
+            }
+            if ($primaryIndex !== null) {
+                unset($additionalServices[$primaryIndex]);
+                $additionalServices = array_values($additionalServices);
+            }
+        }
+        // Hide cancelled/voided add-ons from add-on lists while keeping full service_lines for audit/history.
+        $row['additional_services'] = array_values(array_filter($additionalServices, function ($line) {
+            return strtolower((string)($line['status'] ?? '')) !== 'voided';
+        }));
+        $row['service_progress'] = $this->getSessionServiceProgress($sessionId);
         $row['addon_lines'] = $this->getAddonLines($sessionId);
+
         return $row;
+    }
+
+    private function calculateAddonUnitLabour(array $addonRow, int $quantity): float {
+        $bulkAfter = isset($addonRow['bulk_after']) ? intval($addonRow['bulk_after']) : 0;
+        if ($bulkAfter > 0 && $quantity >= $bulkAfter && $addonRow['bulk_labour_price'] !== null && $addonRow['bulk_labour_price'] !== '') {
+            return $this->normalizeAmount($addonRow['bulk_labour_price']);
+        }
+        return $this->normalizeAmount($addonRow['labour_price'] ?? 0);
+    }
+
+    private function decorateAddonLineRow(array $row): array {
+        $quantity = max(1, intval($row['quantity'] ?? 1));
+        $material = $this->normalizeAmount($row['material_price'] ?? 0);
+        $unitLabour = $this->normalizeAmount($row['labour_price'] ?? 0);
+        $unitPrice = $material + $unitLabour;
+        $row['quantity'] = $quantity;
+        $row['price'] = $unitPrice;
+        $row['line_total'] = $unitPrice * $quantity;
+        return $row;
+    }
+
+    public function getAddonLines($sessionId) {
+        $query = "SELECT sa.*, a.name AS addon_name
+                  FROM session_addons sa
+                  INNER JOIN addons a ON a.id = sa.addon_id
+                  WHERE sa.session_id = ?
+                  ORDER BY sa.id ASC";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) {
+            return [];
+        }
+        $stmt->bind_param("i", $sessionId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $rows = [];
+        while ($res && ($row = $res->fetch_assoc())) {
+            $rows[] = $this->decorateAddonLineRow($row);
+        }
+        return $rows;
+    }
+
+    public function addAddonToSession($sessionId, $addonId, $quantity = 1) {
+        $quantity = max(1, intval($quantity));
+        $this->conn->begin_transaction();
+        try {
+            $sessionQuery = "SELECT status, billing_status, billing_subtotal, discount_type, discount_value, total_amount
+                             FROM {$this->table}
+                             WHERE id = ? LIMIT 1";
+            $sessionStmt = $this->conn->prepare($sessionQuery);
+            if (!$sessionStmt) {
+                throw new Exception('Prepare session fetch failed: ' . $this->conn->error);
+            }
+            $sessionStmt->bind_param("i", $sessionId);
+            $sessionStmt->execute();
+            $sessionRes = $sessionStmt->get_result();
+            $sessionRow = $sessionRes ? $sessionRes->fetch_assoc() : null;
+            if (!$sessionRow) {
+                throw new Exception('Session not found.');
+            }
+            $billingStatus = $this->sanitizeBillingStatus($sessionRow['billing_status'] ?? 'unbilled');
+            if ($billingStatus === 'paid') {
+                throw new Exception('Paid sessions cannot be modified.');
+            }
+
+            $addonQuery = "SELECT id, name, material_price, labour_price, bulk_after, bulk_labour_price, status
+                           FROM addons
+                           WHERE id = ? LIMIT 1";
+            $addonStmt = $this->conn->prepare($addonQuery);
+            if (!$addonStmt) {
+                throw new Exception('Prepare addon fetch failed: ' . $this->conn->error);
+            }
+            $addonStmt->bind_param("i", $addonId);
+            $addonStmt->execute();
+            $addonRes = $addonStmt->get_result();
+            $addonRow = $addonRes ? $addonRes->fetch_assoc() : null;
+            if (!$addonRow) {
+                throw new Exception('Addon not found.');
+            }
+            if (strcasecmp((string)($addonRow['status'] ?? ''), 'Active') !== 0) {
+                throw new Exception('Addon is not active.');
+            }
+
+            $materialPrice = $this->normalizeAmount($addonRow['material_price'] ?? 0);
+            $catalogLabour = $this->normalizeAmount($addonRow['labour_price'] ?? 0);
+            $bulkAfter = isset($addonRow['bulk_after']) && $addonRow['bulk_after'] !== '' && $addonRow['bulk_after'] !== null
+                ? intval($addonRow['bulk_after'])
+                : null;
+            $bulkLabourPrice = ($bulkAfter !== null && $addonRow['bulk_labour_price'] !== null && $addonRow['bulk_labour_price'] !== '')
+                ? $this->normalizeAmount($addonRow['bulk_labour_price'])
+                : null;
+            $effectiveLabour = $this->calculateAddonUnitLabour([
+                'labour_price' => $catalogLabour,
+                'bulk_after' => $bulkAfter,
+                'bulk_labour_price' => $bulkLabourPrice,
+            ], $quantity);
+
+            $insertQuery = "INSERT INTO session_addons
+                            (session_id, addon_id, quantity, material_price, labour_price, bulk_labour_price)
+                            VALUES (?, ?, ?, ?, ?, NULL)";
+            $insertStmt = $this->conn->prepare($insertQuery);
+            if (!$insertStmt) {
+                throw new Exception('Prepare addon insert failed: ' . $this->conn->error);
+            }
+            $insertStmt->bind_param(
+                "iiidd",
+                $sessionId,
+                $addonId,
+                $quantity,
+                $materialPrice,
+                $effectiveLabour
+            );
+            if (!$insertStmt->execute()) {
+                throw new Exception('Execute addon insert failed: ' . $insertStmt->error);
+            }
+
+            $lineTotal = ($materialPrice + $effectiveLabour) * $quantity;
+
+            $currentSubtotal = floatval($sessionRow['billing_subtotal'] ?? 0);
+            if ($currentSubtotal <= 0) {
+                $currentSubtotal = floatval($sessionRow['total_amount'] ?? 0);
+            }
+            $newSubtotal = $currentSubtotal + $lineTotal;
+            $discountType = ($sessionRow['discount_type'] ?? 'amount') === 'percent' ? 'percent' : 'amount';
+            $discountValue = floatval($sessionRow['discount_value'] ?? 0);
+            $discountAmount = $this->calculateDiscountAmount($newSubtotal, $discountType, $discountValue);
+            $newTotal = $this->calculatePayableTotal($newSubtotal, $discountType, $discountValue);
+
+            $updateQuery = "UPDATE {$this->table}
+                            SET billing_subtotal = ?, discount_amount = ?, total_amount = ?
+                            WHERE id = ?";
+            $updateStmt = $this->conn->prepare($updateQuery);
+            if (!$updateStmt) {
+                throw new Exception('Prepare total update failed: ' . $this->conn->error);
+            }
+            $updateStmt->bind_param("dddi", $newSubtotal, $discountAmount, $newTotal, $sessionId);
+            if (!$updateStmt->execute()) {
+                throw new Exception('Execute total update failed: ' . $updateStmt->error);
+            }
+
+            $this->conn->commit();
+            $this->lastError = null;
+            return true;
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            $this->lastError = $e->getMessage();
+            error_log($e->getMessage());
+            return false;
+        }
+    }
+
+    public function removeAddonFromSession($addonLineId) {
+        $this->conn->begin_transaction();
+        try {
+            $lineQuery = "SELECT sa.id, sa.session_id, sa.quantity, sa.material_price, sa.labour_price,
+                                 s.billing_status, s.billing_subtotal, s.discount_type, s.discount_value, s.total_amount
+                          FROM session_addons sa
+                          INNER JOIN {$this->table} s ON s.id = sa.session_id
+                          WHERE sa.id = ?
+                          LIMIT 1";
+            $lineStmt = $this->conn->prepare($lineQuery);
+            if (!$lineStmt) {
+                throw new Exception('Prepare addon line fetch failed: ' . $this->conn->error);
+            }
+            $lineStmt->bind_param("i", $addonLineId);
+            $lineStmt->execute();
+            $lineRes = $lineStmt->get_result();
+            $lineRow = $lineRes ? $lineRes->fetch_assoc() : null;
+            if (!$lineRow) {
+                throw new Exception('Addon line not found.');
+            }
+            if ($this->sanitizeBillingStatus($lineRow['billing_status'] ?? 'unbilled') === 'paid') {
+                throw new Exception('Paid sessions cannot be modified.');
+            }
+
+            $lineTotal = $this->decorateAddonLineRow($lineRow)['line_total'];
+            $sessionId = intval($lineRow['session_id']);
+
+            $deleteStmt = $this->conn->prepare("DELETE FROM session_addons WHERE id = ?");
+            if (!$deleteStmt) {
+                throw new Exception('Prepare addon delete failed: ' . $this->conn->error);
+            }
+            $deleteStmt->bind_param("i", $addonLineId);
+            if (!$deleteStmt->execute()) {
+                throw new Exception('Execute addon delete failed: ' . $deleteStmt->error);
+            }
+
+            $currentSubtotal = floatval($lineRow['billing_subtotal'] ?? 0);
+            if ($currentSubtotal <= 0) {
+                $currentSubtotal = floatval($lineRow['total_amount'] ?? 0);
+            }
+            $newSubtotal = max(0, $currentSubtotal - $lineTotal);
+            $discountType = ($lineRow['discount_type'] ?? 'amount') === 'percent' ? 'percent' : 'amount';
+            $discountValue = floatval($lineRow['discount_value'] ?? 0);
+            $discountAmount = $this->calculateDiscountAmount($newSubtotal, $discountType, $discountValue);
+            $newTotal = $this->calculatePayableTotal($newSubtotal, $discountType, $discountValue);
+
+            $updateStmt = $this->conn->prepare("UPDATE {$this->table}
+                                                SET billing_subtotal = ?, discount_amount = ?, total_amount = ?
+                                                WHERE id = ?");
+            if (!$updateStmt) {
+                throw new Exception('Prepare total update failed: ' . $this->conn->error);
+            }
+            $updateStmt->bind_param("dddi", $newSubtotal, $discountAmount, $newTotal, $sessionId);
+            if (!$updateStmt->execute()) {
+                throw new Exception('Execute total update failed: ' . $updateStmt->error);
+            }
+
+            $this->conn->commit();
+            $this->lastError = null;
+            return true;
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            $this->lastError = $e->getMessage();
+            error_log($e->getMessage());
+            return false;
+        }
     }
 
     public function getAll($authData = null) {
@@ -75,29 +443,38 @@ class Session extends BaseModel {
 
         $role = strtolower((string)($authData['role'] ?? ''));
         if ($role === 'attendant') {
-            $userId = intval($authData['user_id'] ?? 0);
-            $where = ' WHERE (s.created_by = ? OR s.id IN (SELECT DISTINCT session_id FROM session_services WHERE assigned_staff_id = ?))';
-            $params[] = $userId;
-            $params[] = $userId;
-            $types .= 'ii';
+            $where = ' WHERE (s.staff_id = ? OR s.staff_id IS NULL)';
+            $params[] = intval($authData['user_id']);
+            $types .= 'i';
         }
 
-        $query = "SELECT s.*, cb.name AS created_by_name,
-                         a.appointment_code
+        $query = "SELECT s.*, st.name as staff_name, st.skill as staff_skill, sv.name as service_name, sv.price as service_price,
+                         a.appointment_code, a.appointment_date, a.appointment_time,
+                         TIMESTAMPDIFF(SECOND, s.start_time, COALESCE(s.end_time, NOW())) as elapsed_seconds
                   FROM {$this->table} s
-                  LEFT JOIN staffs cb ON cb.id = s.created_by
-                  LEFT JOIN appointments a ON a.id = s.appointment_id
+                  LEFT JOIN staffs st ON s.staff_id = st.id
+                  LEFT JOIN services sv ON s.service_id = sv.id
+                  LEFT JOIN appointments a ON s.appointment_id = a.id
                   {$where}
                   ORDER BY s.created_at DESC";
 
         if (!empty($params)) {
             $stmt = $this->conn->prepare($query);
-            if (!$stmt) return [];
+            if (!$stmt) {
+                $this->lastError = 'getAll prepare failed: ' . $this->conn->error;
+                error_log($this->lastError);
+                return [];
+            }
             $stmt->bind_param($types, ...$params);
             $stmt->execute();
             $result = $stmt->get_result();
         } else {
             $result = $this->conn->query($query);
+            if (!$result) {
+                $this->lastError = 'getAll query failed: ' . $this->conn->error;
+                error_log($this->lastError);
+                return [];
+            }
         }
 
         $data = [];
@@ -110,32 +487,34 @@ class Session extends BaseModel {
     }
 
     public function getById($id, $authData = null) {
-        $where = '';
+        $role = strtolower((string)($authData['role'] ?? ''));
+        $staffClause = '';
         $params = [$id];
         $types = 'i';
 
-        $role = strtolower((string)($authData['role'] ?? ''));
         if ($role === 'attendant') {
-            $userId = intval($authData['user_id'] ?? 0);
-            $where = ' AND (s.created_by = ? OR s.id IN (SELECT DISTINCT session_id FROM session_services WHERE assigned_staff_id = ?))';
-            $params[] = $userId;
-            $params[] = $userId;
-            $types .= 'ii';
+            $staffClause = ' AND (s.staff_id = ? OR s.staff_id IS NULL)';
+            $params[] = intval($authData['user_id']);
+            $types .= 'i';
         }
 
-        $query = "SELECT s.*, cb.name AS created_by_name,
-                         a.appointment_code
+        $query = "SELECT s.*, st.name as staff_name, st.skill as staff_skill, sv.name as service_name, sv.price as service_price,
+                         a.appointment_code, a.appointment_date, a.appointment_time,
+                         TIMESTAMPDIFF(SECOND, s.start_time, COALESCE(s.end_time, NOW())) as elapsed_seconds
                   FROM {$this->table} s
-                  LEFT JOIN staffs cb ON cb.id = s.created_by
-                  LEFT JOIN appointments a ON a.id = s.appointment_id
-                  WHERE s.id = ?{$where}";
+                  LEFT JOIN staffs st ON s.staff_id = st.id
+                  LEFT JOIN services sv ON s.service_id = sv.id
+                  LEFT JOIN appointments a ON s.appointment_id = a.id
+                  WHERE s.id = ?{$staffClause}";
 
         $stmt = $this->conn->prepare($query);
         if (!$stmt) return null;
+
         $stmt->bind_param($types, ...$params);
         $stmt->execute();
         $result = $stmt->get_result();
-        $row = $result ? $result->fetch_assoc() : null;
+        $row = $result->fetch_assoc();
+
         return $this->enrichSessionRowWithServiceLines($row);
     }
 
@@ -153,11 +532,11 @@ class Session extends BaseModel {
         $this->conn->begin_transaction();
         try {
             $query = "INSERT INTO {$this->table} (
-                        session_code, customer_name, client_phone, client_email,
-                        total_amount, billing_status, notes, appointment_id, created_by
+                        session_code, customer_name, client_phone, client_email, staff_id, service_id,
+                        total_amount, billing_subtotal, billing_status, status, start_time, notes, appointment_id
                       )
-                      VALUES (?, ?, ?, ?, ?, 'unbilled', ?, NULLIF(?, 0), NULLIF(?, 0))";
-
+                      VALUES (?, ?, ?, ?, NULLIF(?, 0), NULLIF(?, 0), ?, ?, ?, ?, NOW(), ?, NULLIF(?, 0))";
+                      
             $stmt = $this->conn->prepare($query);
             if (!$stmt) throw new Exception("Prepare failed: " . $this->conn->error);
 
@@ -165,25 +544,83 @@ class Session extends BaseModel {
             $customer_name = !empty($data['customer_name']) ? $data['customer_name'] : 'Walk-in';
             $client_phone = isset($data['client_phone']) ? trim((string) $data['client_phone']) : '';
             $client_email = isset($data['client_email']) ? trim((string) $data['client_email']) : '';
-            $total_amount = 0.00;
+            $staff_id = isset($data['staff_id']) ? intval($data['staff_id']) : 0;
+            $service_id = isset($data['service_id']) ? intval($data['service_id']) : 0;
+            if (!$this->entityExists('staffs', $staff_id)) {
+                $staff_id = 0;
+            }
+            if (!$this->entityExists('services', $service_id)) {
+                $service_id = 0;
+            }
+            $total_amount = isset($data['total_amount']) ? $this->normalizeAmount($data['total_amount']) : 0.00;
+            $status = $data['status'] ?? 'In Progress';
+            $billingSubtotal = $total_amount;
+            $billingStatus = 'unbilled';
             $notes = $data['notes'] ?? '';
             $appointment_id = isset($data['appointment_id']) && $data['appointment_id'] !== '' ? intval($data['appointment_id']) : 0;
-            $created_by = isset($data['created_by']) && $data['created_by'] !== '' ? intval($data['created_by']) : 0;
 
             $stmt->bind_param(
-                "ssssdsii",
+                "ssssiiddsssi",
                 $session_code,
                 $customer_name,
                 $client_phone,
                 $client_email,
+                $staff_id,
+                $service_id,
                 $total_amount,
+                $billingSubtotal,
+                $billingStatus,
+                $status,
                 $notes,
-                $appointment_id,
-                $created_by
+                $appointment_id
             );
-
+            
             if (!$stmt->execute()) throw new Exception("Execute failed: " . $stmt->error);
             $session_id = $stmt->insert_id;
+
+            $lineStatus = $this->getServiceLineStatusFromSessionStatus($status);
+            $lineStart = ($lineStatus === 'in_progress') ? date('Y-m-d H:i:s') : null;
+            $lineEnd = ($lineStatus === 'completed' || $lineStatus === 'voided') ? date('Y-m-d H:i:s') : null;
+
+            // Primary service line
+            if ($service_id > 0) {
+                $primaryPrice = 0.00;
+                $priceStmt = $this->conn->prepare("SELECT price FROM services WHERE id = ? LIMIT 1");
+                if ($priceStmt) {
+                    $priceStmt->bind_param("i", $service_id);
+                    $priceStmt->execute();
+                    $priceRes = $priceStmt->get_result();
+                    $priceRow = $priceRes ? $priceRes->fetch_assoc() : null;
+                    $primaryPrice = $priceRow ? $this->normalizeAmount($priceRow['price']) : 0.00;
+                }
+
+                $primaryQuery = "INSERT INTO session_services (session_id, service_id, assigned_staff_id, price, status, start_time, end_time)
+                                 VALUES (?, ?, NULLIF(?, 0), ?, ?, ?, ?)";
+                $primaryStmt = $this->conn->prepare($primaryQuery);
+                if (!$primaryStmt) throw new Exception("Primary service insert prepare failed: " . $this->conn->error);
+                $primaryStmt->bind_param("iiidsss", $session_id, $service_id, $staff_id, $primaryPrice, $lineStatus, $lineStart, $lineEnd);
+                if (!$primaryStmt->execute()) throw new Exception("Primary service insert failed: " . $primaryStmt->error);
+            }
+
+            // Handle additional services
+            if (isset($data['additional_services']) && is_array($data['additional_services'])) {
+                $svc_query = "INSERT INTO session_services (session_id, service_id, assigned_staff_id, price, status, start_time, end_time)
+                              VALUES (?, ?, NULLIF(?, 0), ?, ?, ?, ?)";
+                $svc_stmt = $this->conn->prepare($svc_query);
+                foreach ($data['additional_services'] as $svc) {
+                    $svc_id = intval($svc['service_id']);
+                    if (!$this->entityExists('services', $svc_id)) {
+                        continue;
+                    }
+                    $svc_price = isset($svc['price']) ? $this->normalizeAmount($svc['price']) : 0.00;
+                    $assignedStaffId = isset($svc['assigned_staff_id']) ? intval($svc['assigned_staff_id']) : $staff_id;
+                    if (!$this->entityExists('staffs', $assignedStaffId)) {
+                        $assignedStaffId = $staff_id;
+                    }
+                    $svc_stmt->bind_param("iiidsss", $session_id, $svc_id, $assignedStaffId, $svc_price, $lineStatus, $lineStart, $lineEnd);
+                    if (!$svc_stmt->execute()) throw new Exception("Additional service insert failed: " . $svc_stmt->error);
+                }
+            }
 
             $this->conn->commit();
             $this->lastError = null;
@@ -200,14 +637,27 @@ class Session extends BaseModel {
         $updates = [];
         $types = "";
         $params = [];
-
+        
         $fields = [
             'customer_name' => 's',
             'client_phone' => 's',
             'client_email' => 's',
+            'staff_id' => 'i',
+            'service_id' => 'i',
+            'total_amount' => 'd',
+            'billing_subtotal' => 'd',
+            'discount_value' => 'd',
+            'discount_amount' => 'd',
+            'status' => 's',
+            'billing_status' => 's',
+            'discount_type' => 's',
+            'end_time' => 's',
+            'payment_requested_at' => 's',
+            'paid_at' => 's',
+            'payment_transaction_code' => 's',
             'notes' => 's'
         ];
-
+        
         foreach ($fields as $field => $type) {
             if (isset($data[$field])) {
                 $updates[] = "$field = ?";
@@ -218,14 +668,65 @@ class Session extends BaseModel {
 
         if (empty($updates)) return false;
 
-        $query = "UPDATE {$this->table} SET " . implode(', ', $updates) . " WHERE id = ?";
-        $types .= "i";
-        $params[] = $id;
+        // Auto-close session timestamp when marked completed (unless explicitly set).
+        if (isset($data['status']) && $data['status'] === 'Completed' && !isset($data['end_time'])) {
+            $updates[] = "end_time = NOW()";
+        }
 
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) return false;
-        $stmt->bind_param($types, ...$params);
-        return $stmt->execute();
+        $this->conn->begin_transaction();
+        try {
+            $query = "UPDATE {$this->table} SET " . implode(', ', $updates) . " WHERE id = ?";
+            $types .= "i";
+            $params[] = $id;
+
+            $stmt = $this->conn->prepare($query);
+            if (!$stmt) throw new Exception("Prepare session update failed: " . $this->conn->error);
+            $stmt->bind_param($types, ...$params);
+            if (!$stmt->execute()) throw new Exception("Execute session update failed: " . $stmt->error);
+
+            if (isset($data['status'])) {
+                $apptQuery = "SELECT appointment_id FROM {$this->table} WHERE id = ? LIMIT 1";
+                $apptStmt = $this->conn->prepare($apptQuery);
+                if ($apptStmt) {
+                    $apptStmt->bind_param("i", $id);
+                    $apptStmt->execute();
+                    $apptRes = $apptStmt->get_result();
+                    $apptRow = $apptRes ? $apptRes->fetch_assoc() : null;
+                    $appointmentId = $apptRow['appointment_id'] ?? null;
+
+                    if (!empty($appointmentId)) {
+                        $sessionStatus = $data['status'];
+                        $appointmentStatus = null;
+                        if ($sessionStatus === 'Completed') {
+                            $appointmentStatus = 'completed';
+                        } elseif ($sessionStatus === 'Voided') {
+                            $appointmentStatus = 'cancelled';
+                        } elseif ($sessionStatus === 'In Progress' || $sessionStatus === 'Finalizing') {
+                            // Keep canonical enum; frontend derives "In Session Progress" from linked session status.
+                            $appointmentStatus = 'confirmed';
+                        }
+
+                        if ($appointmentStatus) {
+                            $updateAppt = "UPDATE appointments SET status = ? WHERE id = ?";
+                            $updateApptStmt = $this->conn->prepare($updateAppt);
+                            if ($updateApptStmt) {
+                                $updateApptStmt->bind_param("si", $appointmentStatus, $appointmentId);
+                                if (!$updateApptStmt->execute()) {
+                                    throw new Exception("Appointment status sync failed: " . $updateApptStmt->error);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            $this->conn->commit();
+            return true;
+        } catch (Exception $e) {
+            $this->conn->rollback();
+            error_log($e->getMessage());
+            return false;
+        }
     }
 
     public function delete($id) {
@@ -236,12 +737,13 @@ class Session extends BaseModel {
         return $stmt->execute();
     }
 
-    public function addServiceToSession($sessionId, $serviceId, $price, $assignedStaffId = 0, $isFromAppointment = false) {
+    public function addServiceToSession($sessionId, $serviceId, $price) {
         $normalizedPrice = $this->normalizeAmount($price);
-        $defaultFlag = $isFromAppointment ? 1 : 0;
         $this->conn->begin_transaction();
         try {
-            $sessionQuery = "SELECT id, billing_status FROM {$this->table} WHERE id = ? LIMIT 1";
+            $sessionQuery = "SELECT status, staff_id, billing_status, billing_subtotal, discount_type, discount_value
+                             FROM {$this->table}
+                             WHERE id = ? LIMIT 1";
             $sessionStmt = $this->conn->prepare($sessionQuery);
             if (!$sessionStmt) throw new Exception("Prepare session fetch failed: " . $this->conn->error);
             $sessionStmt->bind_param("i", $sessionId);
@@ -249,20 +751,39 @@ class Session extends BaseModel {
             $sessionRes = $sessionStmt->get_result();
             $sessionRow = $sessionRes ? $sessionRes->fetch_assoc() : null;
             if (!$sessionRow) throw new Exception("Session not found.");
-            if (strtolower((string)($sessionRow['billing_status'] ?? '')) === 'paid') {
+            $billingStatus = $this->sanitizeBillingStatus($sessionRow['billing_status'] ?? 'unbilled');
+            if ($billingStatus === 'paid') {
                 throw new Exception("Paid sessions cannot be modified.");
             }
 
-            $query = "INSERT INTO session_services (session_id, service_id, assigned_staff_id, price, is_from_appointment)
-                      VALUES (?, ?, NULLIF(?, 0), ?, ?)";
+            $lineStatus = $this->getServiceLineStatusFromSessionStatus((string)$sessionRow['status']);
+            $lineStart = ($lineStatus === 'in_progress') ? date('Y-m-d H:i:s') : null;
+            $lineEnd = ($lineStatus === 'completed' || $lineStatus === 'voided') ? date('Y-m-d H:i:s') : null;
+            $assignedStaffId = intval($sessionRow['staff_id'] ?? 0);
+
+            $query = "INSERT INTO session_services (session_id, service_id, assigned_staff_id, price, status, start_time, end_time) VALUES (?, ?, NULLIF(?, 0), ?, ?, ?, ?)";
             $stmt = $this->conn->prepare($query);
             if (!$stmt) throw new Exception("Prepare add service failed: " . $this->conn->error);
-            $stmt->bind_param("iiidi", $sessionId, $serviceId, $assignedStaffId, $normalizedPrice, $defaultFlag);
+            $stmt->bind_param("iiidsss", $sessionId, $serviceId, $assignedStaffId, $normalizedPrice, $lineStatus, $lineStart, $lineEnd);
             if (!$stmt->execute()) throw new Exception("Execute add service failed: " . $stmt->error);
 
-            if (!$this->recalculateSessionTotal($sessionId)) {
-                throw new Exception("Failed to update total after adding service.");
+            $currentSubtotal = floatval($sessionRow['billing_subtotal'] ?? 0);
+            if ($currentSubtotal <= 0) {
+                $currentSubtotal = floatval($sessionRow['total_amount'] ?? 0);
             }
+            $newSubtotal = $currentSubtotal + $normalizedPrice;
+            $discountType = ($sessionRow['discount_type'] ?? 'amount') === 'percent' ? 'percent' : 'amount';
+            $discountValue = floatval($sessionRow['discount_value'] ?? 0);
+            $discountAmount = $this->calculateDiscountAmount($newSubtotal, $discountType, $discountValue);
+            $newTotal = $this->calculatePayableTotal($newSubtotal, $discountType, $discountValue);
+
+            $updateQuery = "UPDATE {$this->table}
+                            SET billing_subtotal = ?, discount_amount = ?, total_amount = ?
+                            WHERE id = ?";
+            $updateStmt = $this->conn->prepare($updateQuery);
+            if (!$updateStmt) throw new Exception("Prepare total update failed: " . $this->conn->error);
+            $updateStmt->bind_param("dddi", $newSubtotal, $discountAmount, $newTotal, $sessionId);
+            if (!$updateStmt->execute()) throw new Exception("Execute total update failed: " . $updateStmt->error);
 
             $this->conn->commit();
             return true;
@@ -274,304 +795,129 @@ class Session extends BaseModel {
         }
     }
 
-    public function removeServiceFromSession($sessionServiceId) {
-        $this->conn->begin_transaction();
-        try {
-            $fetchQuery = "SELECT ss.session_id, s.billing_status
-                           FROM session_services ss
-                           INNER JOIN {$this->table} s ON s.id = ss.session_id
-                           WHERE ss.id = ?";
-            $fetchStmt = $this->conn->prepare($fetchQuery);
-            if (!$fetchStmt) throw new Exception("Prepare fetch failed: " . $this->conn->error);
-            $fetchStmt->bind_param("i", $sessionServiceId);
-            $fetchStmt->execute();
-            $fetchRes = $fetchStmt->get_result();
-            $row = $fetchRes ? $fetchRes->fetch_assoc() : null;
-            if (!$row) throw new Exception("Service line not found.");
-            if (strtolower((string)($row['billing_status'] ?? '')) === 'paid') {
-                throw new Exception("Paid sessions cannot be modified.");
-            }
-
-            $sessionId = intval($row['session_id']);
-            $deleteQuery = "DELETE FROM session_services WHERE id = ?";
-            $deleteStmt = $this->conn->prepare($deleteQuery);
-            if (!$deleteStmt) throw new Exception("Prepare delete failed: " . $this->conn->error);
-            $deleteStmt->bind_param("i", $sessionServiceId);
-            if (!$deleteStmt->execute()) throw new Exception("Execute delete failed: " . $deleteStmt->error);
-
-            if (!$this->recalculateSessionTotal($sessionId)) {
-                throw new Exception("Failed to update total after removing service.");
-            }
-
-            $this->conn->commit();
-            $this->lastError = null;
-            return true;
-        } catch (Exception $e) {
-            $this->conn->rollback();
-            $this->lastError = $e->getMessage();
-            error_log($e->getMessage());
-            return false;
-        }
-    }
-
-    public function paySession($sessionId, $transactionCode, $paymentMethod = 'manual') {
-        $session = $this->getById($sessionId);
+    public function applyBillingDiscount($sessionId, $discountType, $discountValue) {
+        $session = $this->getSessionBillingSnapshot($sessionId);
         if (!$session) {
             $this->lastError = 'Session not found.';
             return false;
         }
-        if (strtolower((string)($session['billing_status'] ?? '')) === 'paid') {
+        if (($session['billing_status'] ?? 'unbilled') === 'paid') {
+            $this->lastError = 'Paid sessions cannot be discounted.';
+            return false;
+        }
+
+        $safeType = ($discountType === 'percent') ? 'percent' : 'amount';
+        $safeValue = max(0, floatval($discountValue));
+        $subtotal = floatval($session['billing_subtotal'] ?? 0);
+        if ($subtotal <= 0) {
+            $sumQuery = "SELECT COALESCE(SUM(price),0) AS subtotal FROM session_services WHERE session_id = ?";
+            $sumStmt = $this->conn->prepare($sumQuery);
+            if ($sumStmt) {
+                $sumStmt->bind_param("i", $sessionId);
+                $sumStmt->execute();
+                $sumRes = $sumStmt->get_result();
+                $sumRow = $sumRes ? $sumRes->fetch_assoc() : null;
+                $subtotal = floatval($sumRow['subtotal'] ?? 0);
+            }
+        }
+
+        $manualDiscountAmount = $this->calculateDiscountAmount($subtotal, $safeType, $safeValue);
+        $offerDiscountAmount = $this->calculateSessionOfferDiscount($sessionId);
+        $discountAmount = min($subtotal, $manualDiscountAmount + $offerDiscountAmount);
+        $payable = max(0, $subtotal - $discountAmount);
+
+        $query = $this->sessionHasOfferDiscountColumn()
+            ? "UPDATE {$this->table}
+               SET billing_subtotal = ?, discount_type = ?, discount_value = ?, offer_discount_amount = ?, discount_amount = ?, total_amount = ?
+               WHERE id = ?"
+            : "UPDATE {$this->table}
+               SET billing_subtotal = ?, discount_type = ?, discount_value = ?, discount_amount = ?, total_amount = ?
+               WHERE id = ?";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) {
+            $this->lastError = 'Failed to prepare billing discount update.';
+            return false;
+        }
+        if ($this->sessionHasOfferDiscountColumn()) {
+            $stmt->bind_param("dsddddi", $subtotal, $safeType, $safeValue, $offerDiscountAmount, $discountAmount, $payable, $sessionId);
+        } else {
+            $stmt->bind_param("dsdddi", $subtotal, $safeType, $safeValue, $discountAmount, $payable, $sessionId);
+        }
+        if (!$stmt->execute()) {
+            $this->lastError = $stmt->error;
+            return false;
+        }
+        $this->lastError = null;
+        return true;
+    }
+
+    public function requestPayment($sessionId) {
+        $session = $this->getSessionBillingSnapshot($sessionId);
+        if (!$session) {
+            $this->lastError = 'Session not found.';
+            return false;
+        }
+        if (($session['billing_status'] ?? 'unbilled') === 'paid') {
+            $this->lastError = 'Session is already paid.';
+            return false;
+        }
+
+        $query = "UPDATE {$this->table}
+                  SET billing_status = 'payment_requested',
+                      payment_requested_at = NOW()
+                  WHERE id = ?";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) {
+            $this->lastError = 'Failed to prepare payment request update.';
+            return false;
+        }
+        $stmt->bind_param("i", $sessionId);
+        if (!$stmt->execute()) {
+            $this->lastError = $stmt->error;
+            return false;
+        }
+        $this->lastError = null;
+        return true;
+    }
+
+    public function confirmPayment($sessionId, $transactionCode) {
+        $session = $this->getSessionBillingSnapshot($sessionId);
+        if (!$session) {
+            $this->lastError = 'Session not found.';
+            return false;
+        }
+        if (($session['billing_status'] ?? 'unbilled') === 'paid') {
             $this->lastError = 'Session is already paid.';
             return false;
         }
 
         $code = trim((string)$transactionCode);
         if ($code === '') {
-            $this->lastError = 'Transaction code is required.';
+            $this->lastError = 'Transaction code is required to confirm payment.';
             return false;
         }
 
         $query = "UPDATE {$this->table}
                   SET billing_status = 'paid',
                       paid_at = NOW(),
-                      payment_transaction_code = ?,
-                      pesapal_payment_method = ?
+                      payment_transaction_code = ?
                   WHERE id = ?";
         $stmt = $this->conn->prepare($query);
         if (!$stmt) {
-            $this->lastError = 'Failed to prepare payment update.';
+            $this->lastError = 'Failed to prepare payment confirmation update.';
             return false;
         }
-        $stmt->bind_param("ssi", $code, $paymentMethod, $sessionId);
+        $stmt->bind_param("si", $code, $sessionId);
         if (!$stmt->execute()) {
             $this->lastError = $stmt->error;
             return false;
         }
         $this->lastError = null;
         return true;
-    }
-
-    public function initiatePesapalPayment($sessionId, $paymentMethod) {
-        $session = $this->getById($sessionId);
-        if (!$session) {
-            $this->lastError = 'Session not found.';
-            return false;
-        }
-        if (!isset($session['billing_status']) || strtolower((string)($session['billing_status'] ?? '')) === 'paid') {
-            $this->lastError = 'Session is already paid.';
-            return false;
-        }
-
-        $total = floatval($session['total_amount'] ?? 0);
-
-        $recalculatedTotal = 0;
-        if (isset($session['service_lines']) && is_array($session['service_lines'])) {
-            foreach ($session['service_lines'] as $line) {
-                $recalculatedTotal += floatval($line['price'] ?? 0);
-            }
-        }
-        if (isset($session['addon_lines']) && is_array($session['addon_lines'])) {
-            foreach ($session['addon_lines'] as $addon) {
-                $recalculatedTotal += floatval($addon['line_total'] ?? 0);
-            }
-        }
-
-        if ($recalculatedTotal > 0 && abs($total - $recalculatedTotal) > 0.01) {
-            $total = $recalculatedTotal;
-            $fixStmt = $this->conn->prepare("UPDATE {$this->table} SET total_amount = ? WHERE id = ?");
-            if ($fixStmt) {
-                $fixStmt->bind_param("di", $total, $sessionId);
-                $fixStmt->execute();
-            }
-        }
-
-        if ($total < 0.01) {
-            error_log('Pesapal initiate: total=' . $total . ' for session ' . $sessionId
-                . ', service_lines=' . (isset($session['service_lines']) ? count($session['service_lines']) : 0)
-                . ', billing_status=' . ($session['billing_status'] ?? '?'));
-            $this->lastError = 'Session total (' . number_format($total, 2) . ') is below the minimum payment amount.';
-            return false;
-        }
-
-        $merchantReference = $session['session_code'] . '-' . bin2hex(random_bytes(8));
-
-        $query = "UPDATE {$this->table}
-                  SET pesapal_merchant_reference = ?,
-                      pesapal_payment_method = ?,
-                      pesapal_initiated_amount = ?,
-                      billing_status = 'payment_requested'
-                  WHERE id = ?";
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) {
-            $this->lastError = 'Failed to prepare payment initiation.';
-            return false;
-        }
-        $stmt->bind_param("ssdi", $merchantReference, $paymentMethod, $total, $sessionId);
-        if (!$stmt->execute()) {
-            $this->lastError = $stmt->error;
-            return false;
-        }
-
-        $this->lastError = null;
-        return [
-            'merchant_reference' => $merchantReference,
-            'amount' => $total,
-            'currency' => 'KES',
-            'session' => $session,
-        ];
-    }
-
-    public function savePesapalOrderResponse($sessionId, $orderTrackingId, $redirectUrl) {
-        $query = "UPDATE {$this->table}
-                  SET pesapal_order_tracking_id = ?,
-                      pesapal_redirect_url = ?
-                  WHERE id = ?";
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) return false;
-        $stmt->bind_param("ssi", $orderTrackingId, $redirectUrl, $sessionId);
-        if (!$stmt->execute()) return false;
-        return true;
-    }
-
-    public function confirmPesapalPayment($sessionId, $orderTrackingId, $confirmationCode, $paymentMethod = null) {
-        $this->conn->begin_transaction();
-        try {
-            $session = $this->getById($sessionId);
-            if (!$session) throw new Exception('Session not found.');
-            if (strtolower((string)($session['billing_status'] ?? '')) === 'paid') {
-                if ($confirmationCode && empty($session['payment_transaction_code'])) {
-                    $updateStmt = $this->conn->prepare(
-                        "UPDATE {$this->table} SET payment_transaction_code = ? WHERE id = ? AND payment_transaction_code IS NULL"
-                    );
-                    if ($updateStmt) {
-                        $updateStmt->bind_param("si", $confirmationCode, $sessionId);
-                        $updateStmt->execute();
-                    }
-                }
-                $this->conn->commit();
-                return $this->getSessionNotificationData($sessionId) ?: $session;
-            }
-
-            $carryMethod = $paymentMethod ?: ($session['pesapal_payment_method'] ?? null);
-
-            $code = $confirmationCode ?: null;
-
-            $query = "UPDATE {$this->table}
-                      SET billing_status = 'paid',
-                          paid_at = NOW(),
-                          payment_transaction_code = ?,
-                          pesapal_order_tracking_id = ?,
-                          pesapal_payment_method = COALESCE(?, pesapal_payment_method)
-                      WHERE id = ? AND billing_status != 'paid'";
-            $stmt = $this->conn->prepare($query);
-            if (!$stmt) throw new Exception('Failed to prepare payment confirmation.');
-
-            $stmt->bind_param("sssi", $code, $orderTrackingId, $carryMethod, $sessionId);
-            if (!$stmt->execute()) throw new Exception($stmt->error);
-
-            $this->conn->commit();
-
-            $updated = $this->getSessionNotificationData($sessionId);
-
-            $this->lastError = null;
-            return $updated ?: true;
-        } catch (Exception $e) {
-            $this->conn->rollback();
-            $this->lastError = $e->getMessage();
-            error_log('Pesapal confirmPayment error: ' . $e->getMessage());
-            return false;
-        }
-    }
-
-    public function failPesapalPayment($sessionId, $orderTrackingId) {
-        $query = "UPDATE {$this->table}
-                  SET billing_status = 'failed',
-                      pesapal_order_tracking_id = ?
-                  WHERE id = ? AND billing_status = 'payment_requested'";
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) return false;
-        $stmt->bind_param("si", $orderTrackingId, $sessionId);
-        return $stmt->execute();
-    }
-
-    public function revertPesapalPayment($sessionId) {
-        $query = "UPDATE {$this->table}
-                  SET billing_status = 'failed',
-                      paid_at = NULL,
-                      payment_transaction_code = NULL
-                  WHERE id = ? AND billing_status = 'paid'";
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) return false;
-        $stmt->bind_param("i", $sessionId);
-        return $stmt->execute();
-    }
-
-    public function cancelPesapalPayment($sessionId, $orderTrackingId) {
-        $query = "UPDATE {$this->table}
-                  SET billing_status = 'cancelled',
-                      pesapal_order_tracking_id = ?
-                  WHERE id = ? AND billing_status = 'payment_requested'";
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) return false;
-        $stmt->bind_param("si", $orderTrackingId, $sessionId);
-        return $stmt->execute();
-    }
-
-    public function findSessionByMerchantReference($merchantReference) {
-        $query = "SELECT id, session_code, customer_name, total_amount, billing_status,
-                         pesapal_order_tracking_id, pesapal_payment_method,
-                         pesapal_merchant_reference, payment_transaction_code, paid_at
-                   FROM {$this->table}
-                   WHERE pesapal_merchant_reference = ?
-                   LIMIT 1";
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) return null;
-        $stmt->bind_param("s", $merchantReference);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        return $result ? $result->fetch_assoc() : null;
-    }
-
-    public function findSessionByOrderTrackingId($orderTrackingId) {
-        $query = "SELECT id, session_code, customer_name, total_amount, billing_status,
-                         pesapal_merchant_reference, pesapal_payment_method,
-                         payment_transaction_code, paid_at
-                   FROM {$this->table}
-                   WHERE pesapal_order_tracking_id = ?
-                   LIMIT 1";
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) return null;
-        $stmt->bind_param("s", $orderTrackingId);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        return $result ? $result->fetch_assoc() : null;
-    }
-
-    private function getSessionTotalRaw($session) {
-        $lines = $session['service_lines'] ?? [];
-        $total = 0;
-        foreach ($lines as $line) {
-            $total += floatval(str_replace(',', '', (string)($line['price'] ?? 0)));
-        }
-        $total -= floatval($session['discount_amount'] ?? 0);
-        return max(0, $total);
-    }
-
-    public function getPesapalOrderStatus($sessionId) {
-        $query = "SELECT pesapal_order_tracking_id, pesapal_merchant_reference,
-                         billing_status, paid_at, payment_transaction_code
-                  FROM {$this->table}
-                  WHERE id = ?";
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) return null;
-        $stmt->bind_param("i", $sessionId);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        return $result ? $result->fetch_assoc() : null;
     }
 
     public function getServiceLines($sessionId) {
-        $query = "SELECT ss.*, sv.name as service_name,
+        $query = "SELECT ss.*, sv.name as service_name, sv.duration as service_duration_minutes,
                          st.name as assigned_staff_name, st.skill as assigned_staff_skill
                   FROM session_services ss
                   INNER JOIN services sv ON sv.id = ss.service_id
@@ -590,189 +936,107 @@ class Session extends BaseModel {
         return $rows;
     }
 
-    private function getAddonLinesRaw($sessionId) {
-        $query = "SELECT sa.*, a.name as addon_name, a.bulk_after, a.bulk_labour_price
-                  FROM session_addons sa
-                  INNER JOIN addons a ON a.id = sa.addon_id
-                  WHERE sa.session_id = ?
-                  ORDER BY sa.id ASC";
+    public function assignStaffToServiceLine($serviceLineId, $staffId) {
+        if (!$this->entityExists('staffs', $staffId)) return false;
+        $query = "UPDATE session_services SET assigned_staff_id = ? WHERE id = ?";
         $stmt = $this->conn->prepare($query);
-        if (!$stmt) return [];
+        if (!$stmt) return false;
+        $stmt->bind_param("ii", $staffId, $serviceLineId);
+        return $stmt->execute();
+    }
+
+    public function updateServiceLineNotes($serviceLineId, $notes) {
+        $query = "UPDATE session_services SET notes = ? WHERE id = ?";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return false;
+        $stmt->bind_param("si", $notes, $serviceLineId);
+        return $stmt->execute();
+    }
+
+    public function updateServiceLineStatus($serviceLineId, $status) {
+        $allowed = ['pending', 'in_progress', 'completed', 'voided'];
+        if (!in_array($status, $allowed, true)) return false;
+
+        $sessionQuery = "SELECT ss.id, ss.status, ss.session_id, ss.assigned_staff_id, ss.service_id, ss.price,
+                                s.status as session_status
+                         FROM session_services ss
+                         INNER JOIN sessions s ON s.id = ss.session_id
+                         WHERE ss.id = ? LIMIT 1";
+        $sessionStmt = $this->conn->prepare($sessionQuery);
+        if (!$sessionStmt) return false;
+        $sessionStmt->bind_param("i", $serviceLineId);
+        $sessionStmt->execute();
+        $sessionRes = $sessionStmt->get_result();
+        $line = $sessionRes ? $sessionRes->fetch_assoc() : null;
+        if (!$line) return false;
+
+        $updates = ["status = ?"];
+        $types = "s";
+        $params = [$status];
+        if ($status === 'in_progress') {
+            $updates[] = "start_time = COALESCE(start_time, NOW())";
+            $updates[] = "end_time = NULL";
+        } elseif ($status === 'completed' || $status === 'voided') {
+            $updates[] = "end_time = NOW()";
+            $updates[] = "start_time = COALESCE(start_time, NOW())";
+        } else {
+            $updates[] = "end_time = NULL";
+        }
+        $types .= "i";
+        $params[] = $serviceLineId;
+
+        $query = "UPDATE session_services SET " . implode(', ', $updates) . " WHERE id = ?";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return false;
+        $stmt->bind_param($types, ...$params);
+        if (!$stmt->execute()) return false;
+        $this->recalculateSessionAmountsExcludingVoided(intval($line['session_id']));
+        return [
+            'session_id' => intval($line['session_id']),
+            'service_line_id' => intval($line['id']),
+            'assigned_staff_id' => intval($line['assigned_staff_id'] ?? 0),
+            'service_id' => intval($line['service_id'] ?? 0),
+            'price' => floatval($line['price'] ?? 0),
+            'status' => $status
+        ];
+    }
+
+    public function canCloseSession($sessionId) {
+        $query = "SELECT COUNT(*) as open_count
+                  FROM session_services
+                  WHERE session_id = ?
+                    AND status NOT IN ('completed','voided')";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return false;
         $stmt->bind_param("i", $sessionId);
         $stmt->execute();
         $res = $stmt->get_result();
-        $rows = [];
-        while ($res && ($row = $res->fetch_assoc())) {
-            $rows[] = $row;
-        }
-        return $rows;
+        $row = $res ? $res->fetch_assoc() : null;
+        return intval($row['open_count'] ?? 0) === 0;
     }
 
-    public function getAddonLines($sessionId) {
-        $rows = $this->getAddonLinesRaw($sessionId);
-        $result = [];
-        foreach ($rows as $row) {
-            $qty = intval($row['quantity'] ?? 1);
-            $matPrice = floatval($row['material_price'] ?? 0);
-            $labPrice = floatval($row['labour_price'] ?? 0);
-            $bulkAfter = isset($row['bulk_after']) ? intval($row['bulk_after']) : null;
-            $bulkLabPrice = isset($row['bulk_labour_price']) ? floatval($row['bulk_labour_price']) : null;
-
-            $materialTotal = $matPrice * $qty;
-            if ($bulkAfter !== null && $bulkLabPrice !== null && $qty > $bulkAfter) {
-                $labourTotal = ($labPrice * $bulkAfter) + ($bulkLabPrice * ($qty - $bulkAfter));
-            } else {
-                $labourTotal = $labPrice * $qty;
-            }
-
-            $row['material_total'] = $materialTotal;
-            $row['labour_total'] = $labourTotal;
-            $row['line_total'] = $materialTotal + $labourTotal;
-            $result[] = $row;
-        }
-        return $result;
-    }
-
-    public function addAddonToSession($sessionId, $addonId, $quantity) {
-        $this->conn->begin_transaction();
-        try {
-            $sessionQuery = "SELECT id, billing_status FROM {$this->table} WHERE id = ? LIMIT 1";
-            $sessionStmt = $this->conn->prepare($sessionQuery);
-            if (!$sessionStmt) throw new Exception("Prepare session fetch failed: " . $this->conn->error);
-            $sessionStmt->bind_param("i", $sessionId);
-            $sessionStmt->execute();
-            $sessionRes = $sessionStmt->get_result();
-            $sessionRow = $sessionRes ? $sessionRes->fetch_assoc() : null;
-            if (!$sessionRow) throw new Exception("Session not found.");
-            if (strtolower((string)($sessionRow['billing_status'] ?? '')) === 'paid') {
-                throw new Exception("Paid sessions cannot be modified.");
-            }
-
-            $addonQuery = "SELECT id, name, material_price, labour_price, bulk_after, bulk_labour_price FROM addons WHERE id = ? AND status = 'Active' LIMIT 1";
-            $addonStmt = $this->conn->prepare($addonQuery);
-            if (!$addonStmt) throw new Exception("Prepare addon fetch failed: " . $this->conn->error);
-            $addonStmt->bind_param("i", $addonId);
-            $addonStmt->execute();
-            $addonRes = $addonStmt->get_result();
-            $addonRow = $addonRes ? $addonRes->fetch_assoc() : null;
-            if (!$addonRow) throw new Exception("Addon not found or inactive.");
-
-            $qty = max(1, intval($quantity));
-
-            $query = "INSERT INTO session_addons (session_id, addon_id, quantity, material_price, labour_price, bulk_labour_price)
-                      VALUES (?, ?, ?, ?, ?, ?)";
-            $stmt = $this->conn->prepare($query);
-            if (!$stmt) throw new Exception("Prepare add addon failed: " . $this->conn->error);
-
-            $matPrice = floatval($addonRow['material_price']);
-            $labPrice = floatval($addonRow['labour_price']);
-            $bulkLabPrice = $addonRow['bulk_labour_price'] !== null ? floatval($addonRow['bulk_labour_price']) : null;
-
-            $stmt->bind_param("iiddd", $sessionId, $addonId, $qty, $matPrice, $labPrice, $bulkLabPrice);
-            if (!$stmt->execute()) throw new Exception("Execute add addon failed: " . $stmt->error);
-
-            if (!$this->recalculateSessionTotal($sessionId)) {
-                throw new Exception("Failed to update total after adding addon.");
-            }
-            $this->conn->commit();
-            return true;
-        } catch (Exception $e) {
-            $this->conn->rollback();
-            $this->lastError = $e->getMessage();
-            error_log($e->getMessage());
-            return false;
-        }
-    }
-
-    public function removeAddonFromSession($sessionAddonId) {
-        $this->conn->begin_transaction();
-        try {
-            $fetchQuery = "SELECT sa.session_id, s.billing_status
-                           FROM session_addons sa
-                           INNER JOIN {$this->table} s ON s.id = sa.session_id
-                           WHERE sa.id = ?";
-            $fetchStmt = $this->conn->prepare($fetchQuery);
-            if (!$fetchStmt) throw new Exception("Prepare fetch failed: " . $this->conn->error);
-            $fetchStmt->bind_param("i", $sessionAddonId);
-            $fetchStmt->execute();
-            $fetchRes = $fetchStmt->get_result();
-            $row = $fetchRes ? $fetchRes->fetch_assoc() : null;
-            if (!$row) throw new Exception("Addon line not found.");
-            if (strtolower((string)($row['billing_status'] ?? '')) === 'paid') {
-                throw new Exception("Paid sessions cannot be modified.");
-            }
-
-            $sessionId = intval($row['session_id']);
-            $deleteQuery = "DELETE FROM session_addons WHERE id = ?";
-            $deleteStmt = $this->conn->prepare($deleteQuery);
-            if (!$deleteStmt) throw new Exception("Prepare delete failed: " . $this->conn->error);
-            $deleteStmt->bind_param("i", $sessionAddonId);
-            if (!$deleteStmt->execute()) throw new Exception("Execute delete failed: " . $deleteStmt->error);
-
-            if (!$this->recalculateSessionTotal($sessionId)) {
-                throw new Exception("Failed to update total after removing addon.");
-            }
-            $this->conn->commit();
-            $this->lastError = null;
-            return true;
-        } catch (Exception $e) {
-            $this->conn->rollback();
-            $this->lastError = $e->getMessage();
-            error_log($e->getMessage());
-            return false;
-        }
-    }
-
-    public function logPaymentEvent(int $sessionId, string $eventType, ?array $eventData = null, ?string $trackingId = null, ?string $merchantReference = null): void {
-        try {
-            $stmt = $this->conn->prepare(
-                "INSERT INTO payment_audit_log (session_id, event_type, event_data, ip_address, user_agent, pesapal_order_tracking_id, pesapal_merchant_reference)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)"
-            );
-            if (!$stmt) return;
-
-            $ip = $_SERVER['REMOTE_ADDR'] ?? $_SERVER['HTTP_X_FORWARDED_FOR'] ?? '';
-            $ua = $_SERVER['HTTP_USER_AGENT'] ?? '';
-            $jsonData = $eventData !== null ? json_encode($eventData) : null;
-            $stmt->bind_param("issssss", $sessionId, $eventType, $jsonData, $ip, $ua, $trackingId, $merchantReference);
-            if (!$stmt->execute()) {
-                error_log('logPaymentEvent failed: ' . $stmt->error);
-            }
-            $stmt->close();
-        } catch (\Throwable $e) {
-            error_log('logPaymentEvent exception: ' . $e->getMessage());
-        }
+    public function getSessionServiceProgress($sessionId) {
+        $query = "SELECT
+                    SUM(CASE WHEN status <> 'voided' THEN 1 ELSE 0 END) as total_services,
+                    SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_services,
+                    SUM(CASE WHEN status NOT IN ('completed','voided') THEN 1 ELSE 0 END) as open_services
+                  FROM session_services
+                  WHERE session_id = ?";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return ['total_services' => 0, 'completed_services' => 0, 'open_services' => 0];
+        $stmt->bind_param("i", $sessionId);
+        $stmt->execute();
+        $res = $stmt->get_result();
+        $row = $res ? $res->fetch_assoc() : null;
+        return [
+            'total_services' => intval($row['total_services'] ?? 0),
+            'completed_services' => intval($row['completed_services'] ?? 0),
+            'open_services' => intval($row['open_services'] ?? 0),
+        ];
     }
 
     public function getLastError() {
         return $this->lastError;
-    }
-
-    public function getSessionNotificationData($sessionId) {
-        $query = "SELECT s.id, s.session_code, s.customer_name, s.client_phone, s.client_email, s.total_amount,
-                         s.created_at, s.paid_at, s.billing_status,
-                         a.appointment_code,
-                         a.customer_email as appointment_email, a.customer_phone as appointment_phone
-                  FROM {$this->table} s
-                  LEFT JOIN appointments a ON s.appointment_id = a.id
-                  WHERE s.id = ?
-                  LIMIT 1";
-        $stmt = $this->conn->prepare($query);
-        if (!$stmt) return null;
-        $stmt->bind_param("i", $sessionId);
-        $stmt->execute();
-        $result = $stmt->get_result();
-        $row = $result ? $result->fetch_assoc() : null;
-        if (!$row) return null;
-
-        if (empty($row['client_email']) && !empty($row['appointment_email'])) {
-            $row['client_email'] = $row['appointment_email'];
-        }
-        if (empty($row['client_phone']) && !empty($row['appointment_phone'])) {
-            $row['client_phone'] = $row['appointment_phone'];
-        }
-
-        return $row;
     }
 
     public function getAppointmentById($appointmentId) {
@@ -867,6 +1131,52 @@ class Session extends BaseModel {
         return $result->num_rows > 0;
     }
 
+    public function getAppointmentBySessionId($sessionId) {
+        $query = "SELECT a.id, a.appointment_code, a.customer_name, a.customer_email, a.customer_phone,
+                         a.appointment_date, a.appointment_time, a.status, sv.name as service_name, st.name as staff_name
+                  FROM {$this->table} s
+                  INNER JOIN appointments a ON a.id = s.appointment_id
+                  LEFT JOIN services sv ON a.service_id = sv.id
+                  LEFT JOIN staffs st ON a.staff_id = st.id
+                  WHERE s.id = ?
+                  LIMIT 1";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return null;
+        $stmt->bind_param("i", $sessionId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        return $result ? $result->fetch_assoc() : null;
+    }
+
+    public function getSessionNotificationData($sessionId) {
+        $query = "SELECT s.id, s.session_code, s.customer_name, s.client_phone, s.client_email, s.total_amount,
+                         s.start_time, s.end_time, s.status,
+                         sv.name as service_name, st.name as staff_name, a.appointment_code,
+                         a.customer_email as appointment_email, a.customer_phone as appointment_phone
+                  FROM {$this->table} s
+                  LEFT JOIN services sv ON s.service_id = sv.id
+                  LEFT JOIN staffs st ON s.staff_id = st.id
+                  LEFT JOIN appointments a ON s.appointment_id = a.id
+                  WHERE s.id = ?
+                  LIMIT 1";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return null;
+        $stmt->bind_param("i", $sessionId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $row = $result ? $result->fetch_assoc() : null;
+        if (!$row) return null;
+
+        if (empty($row['client_email']) && !empty($row['appointment_email'])) {
+            $row['client_email'] = $row['appointment_email'];
+        }
+        if (empty($row['client_phone']) && !empty($row['appointment_phone'])) {
+            $row['client_phone'] = $row['appointment_phone'];
+        }
+
+        return $row;
+    }
+
     public function createOrRefreshFeedbackToken($sessionId, $ttlHours = 168) {
         $token = bin2hex(random_bytes(32));
         $tokenHash = hash('sha256', $token);
@@ -909,9 +1219,12 @@ class Session extends BaseModel {
         if (empty($token)) return null;
         $tokenHash = hash('sha256', $token);
         $query = "SELECT sf.session_id, sf.token_expires_at, sf.submitted_at,
-                         s.session_code, s.customer_name, s.total_amount, s.created_at, s.paid_at
+                         s.session_code, s.customer_name, s.total_amount, s.start_time, s.end_time,
+                         sv.name as service_name, st.name as staff_name
                   FROM session_feedback sf
                   INNER JOIN sessions s ON s.id = sf.session_id
+                  LEFT JOIN services sv ON s.service_id = sv.id
+                  LEFT JOIN staffs st ON s.staff_id = st.id
                   WHERE sf.token_hash = ?
                   LIMIT 1";
         $stmt = $this->conn->prepare($query);

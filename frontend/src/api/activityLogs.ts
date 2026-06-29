@@ -23,7 +23,7 @@ export interface ActivityLogsResponse {
 }
 
 export const activityLogsApi = {
-  getAll: (params?: {
+  getAll: async (params?: {
     page?: number;
     per_page?: number;
     category?: string;
@@ -31,6 +31,8 @@ export const activityLogsApi = {
     date_from?: string;
     date_to?: string;
     actor_id?: number;
-  }) =>
-    api.get<ActivityLogsResponse>('/activity_logs.php', { params }),
+  }) => {
+    const res = await api.get('/activity_logs.php', { params });
+    return { data: (res.data?.data || res.data) as ActivityLogsResponse };
+  },
 };

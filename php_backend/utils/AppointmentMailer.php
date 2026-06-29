@@ -440,6 +440,65 @@ class AppointmentMailer {
         return self::send($to, $subject, $body);
     }
 
+    public static function sendSessionStarted($session) {
+        $to = $session['client_email'] ?? '';
+        if (!self::isValidEmail($to)) return false;
+
+        $sessionCode = self::valueOrFallback($session['session_code'] ?? 'N/A');
+        $customerName = self::valueOrFallback($session['customer_name'] ?? 'Valued Client');
+        $serviceName = self::valueOrFallback($session['service_name'] ?? 'Your service');
+        $staffName = self::valueOrFallback($session['staff_name'] ?? 'Our team');
+        $startedAt = self::formatDateTime($session['start_time'] ?? date('Y-m-d H:i:s'));
+
+        $subject = "Your session has started - {$sessionCode}";
+        $body = "
+            <h2 style='margin-bottom:8px;'>Hi {$customerName},</h2>
+            <p>Your session at Kareh's Spa is now in progress.</p>
+            <p><strong>Session Code:</strong> {$sessionCode}<br/>
+            <strong>Service:</strong> {$serviceName}<br/>
+            <strong>Staff:</strong> {$staffName}<br/>
+            <strong>Started:</strong> {$startedAt}</p>
+            <p>Relax and enjoy your experience. We are glad to have you with us today.</p>
+        ";
+
+        return self::send($to, $subject, $body);
+    }
+
+    public static function sendSessionCompletedWithFeedback($session, $feedbackToken = null) {
+        $to = $session['client_email'] ?? '';
+        if (!self::isValidEmail($to)) return false;
+
+        $sessionCode = self::valueOrFallback($session['session_code'] ?? 'N/A');
+        $customerName = self::valueOrFallback($session['customer_name'] ?? 'Valued Client');
+        $serviceName = self::valueOrFallback($session['service_name'] ?? 'Your service');
+        $staffName = self::valueOrFallback($session['staff_name'] ?? 'Our team');
+        $completedAt = self::formatDateTime($session['end_time'] ?? date('Y-m-d H:i:s'));
+
+        $feedbackCta = '';
+        if (!empty($feedbackToken)) {
+            $feedbackUrl = self::frontendBaseUrl() . '/session-feedback?token=' . rawurlencode((string)$feedbackToken);
+            $safeFeedbackUrl = htmlspecialchars($feedbackUrl, ENT_QUOTES, 'UTF-8');
+            $feedbackCta = "
+                <p><strong>Share your feedback:</strong> <a href='{$safeFeedbackUrl}' target='_blank' rel='noopener noreferrer'>{$safeFeedbackUrl}</a></p>
+                <p>Your feedback helps us improve every visit.</p>
+            ";
+        }
+
+        $subject = "Thank you for visiting Kareh's Spa - {$sessionCode}";
+        $body = "
+            <h2 style='margin-bottom:8px;'>Hi {$customerName},</h2>
+            <p>Thank you for choosing Kareh's Spa. Your session is complete.</p>
+            <p><strong>Session Code:</strong> {$sessionCode}<br/>
+            <strong>Service:</strong> {$serviceName}<br/>
+            <strong>Staff:</strong> {$staffName}<br/>
+            <strong>Completed:</strong> {$completedAt}</p>
+            {$feedbackCta}
+            <p>We look forward to welcoming you again soon.</p>
+        ";
+
+        return self::send($to, $subject, $body);
+    }
+
     public static function sendRaw($toEmail, $subject, $htmlBody) {
         return self::send($toEmail, $subject, $htmlBody);
     }

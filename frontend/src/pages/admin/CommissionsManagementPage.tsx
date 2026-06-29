@@ -51,14 +51,6 @@ const CommissionsManagementPage = () => {
   const reportRange = buildReportingRange(period, new Date(anchorDate));
   const selectedMonth = `${reportRange.start.getFullYear()}-${String(reportRange.start.getMonth() + 1).padStart(2, '0')}`;
 
-  const formatDurationFromSeconds = (seconds?: number | string) => {
-    const totalSec = Math.max(0, Number(seconds || 0));
-    const hh = String(Math.floor(totalSec / 3600)).padStart(2, '0');
-    const mm = String(Math.floor((totalSec % 3600) / 60)).padStart(2, '0');
-    const ss = String(totalSec % 60).padStart(2, '0');
-    return `${hh}:${mm}:${ss}`;
-  };
-
   const fetchData = async () => {
     try {
       const [syncRes, aggRes, summRes, allRes, svcRes] = await Promise.all([
@@ -229,7 +221,7 @@ const CommissionsManagementPage = () => {
                   <div className="d-flex justify-content-between align-items-start mb-2">
                     <div className="p-2 bg-warning bg-opacity-10 text-warning rounded-3"><FiActivity /></div>
                   </div>
-                  <div className="text-secondary x-small text-uppercase tracking-wider fw-bold">Total Tax (12%)</div>
+                  <div className="text-secondary x-small text-uppercase tracking-wider fw-bold">Total Tax</div>
                   <div className="h3 mb-0 fw-bold">KES {parseFloat(summary.total_tax || 0).toLocaleString()}</div>
                 </div>
               </div>
@@ -238,7 +230,7 @@ const CommissionsManagementPage = () => {
                   <div className="d-flex justify-content-between align-items-start mb-2">
                     <div className="p-2 bg-info bg-opacity-10 text-info rounded-3"><FiDollarSign /></div>
                   </div>
-                  <div className="text-secondary x-small text-uppercase tracking-wider fw-bold">Service Profit (18%)</div>
+                  <div className="text-secondary x-small text-uppercase tracking-wider fw-bold">Service Profit</div>
                   <div className="h3 mb-0 fw-bold">KES {parseFloat(summary.total_service_profit || 0).toLocaleString()}</div>
                 </div>
               </div>
@@ -438,19 +430,29 @@ const CommissionsManagementPage = () => {
                   : 'Various (see rows)';
           const totalLabel =
             bucket === 'Paid' ? 'Total settled (this view)' : 'Total outstanding (this view)';
+          const statusLabel = bucket === 'Paid' ? 'Settled' : 'Pending';
+          const totalTax = rows.reduce((acc: number, r: any) => acc + Number(r.tax_amount || 0), 0);
 
           return (
             <div className="glass-panel p-3 rounded-4 border border-opacity-10 mb-3">
               <div className="row g-3">
-                <div className="col-md-4">
+                <div className="col-md-3">
                   <div className="small text-secondary text-uppercase fw-bold">{totalLabel}</div>
                   <div className="fw-bold">KES {total.toLocaleString()}</div>
                 </div>
-                <div className="col-md-4">
+                <div className="col">
+                  <div className="small text-secondary text-uppercase fw-bold">Status</div>
+                  <div className={`fw-bold ${bucket === 'Paid' ? 'text-success' : 'text-warning'}`}>{statusLabel}</div>
+                </div>
+                <div className="col">
+                  <div className="small text-secondary text-uppercase fw-bold">Tax total</div>
+                  <div className="fw-bold">KES {totalTax.toLocaleString()}</div>
+                </div>
+                <div className="col">
                   <div className="small text-secondary text-uppercase fw-bold">Date settled</div>
                   <div className="fw-bold">{dateSummary}</div>
                 </div>
-                <div className="col-md-4">
+                <div className="col">
                   <div className="small text-secondary text-uppercase fw-bold">Transaction code</div>
                   <div className="fw-bold">{txnSummary}</div>
                 </div>
@@ -465,28 +467,15 @@ const CommissionsManagementPage = () => {
               <tr>
                 <th>Session</th>
                 <th>Service</th>
-                {canSeeCommissionRules ? <th>Commission rule</th> : null}
-                <th>Net staff %</th>
                 <th>Charge (KES)</th>
-                <th>Set Duration</th>
-                <th>Duration Used</th>
-                {!attendantView && <th>Tax</th>}
                 <th>Your commission</th>
-                {!attendantView && <th>Service Profit</th>}
-                <th>Settlement</th>
-                <th>Reference</th>
                 <th>Date</th>
               </tr>
             </thead>
             <tbody>
               {staffServiceDetails.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={
-                      attendantView ? (canSeeCommissionRules ? 11 : 10) : canSeeCommissionRules ? 13 : 12
-                    }
-                    className="text-secondary small"
-                  >
+                  <td colSpan={5} className="text-secondary small">
                     No services found for the selected period.
                   </td>
                 </tr>
@@ -503,26 +492,8 @@ const CommissionsManagementPage = () => {
                       <span>{row.service_name || '-'}</span>
                     </div>
                   </td>
-                  {canSeeCommissionRules ? (
-                    <td className="small">
-                      {(row.commission_rule_name && String(row.commission_rule_name).trim()) || 'Site default'}
-                    </td>
-                  ) : null}
-                  <td className="small text-nowrap">
-                    {Number(row.net_staff_pct ?? row.commission_rate ?? 0).toFixed(1)}%
-                  </td>
                   <td className="small fw-bold">KES {parseFloat(row.charge_amount || 0).toLocaleString()}</td>
-                  <td className="small">{row.service_duration_minutes ? `${row.service_duration_minutes} min` : '-'}</td>
-                  <td className="small">{formatDurationFromSeconds(row.duration_used_seconds)}</td>
-                  {!attendantView && <td className="small text-warning">KES {parseFloat(row.tax_amount || 0).toLocaleString()}</td>}
                   <td className="small text-success fw-semibold">KES {parseFloat(row.staff_amount || 0).toLocaleString()}</td>
-                  {!attendantView && <td className="small text-info">KES {parseFloat(row.service_profit_amount || 0).toLocaleString()}</td>}
-                  <td className="small">{row.payment_status || '-'}</td>
-                  <td className="small text-nowrap">
-                    {row.payment_status === 'Paid' && row.transaction_id != null && String(row.transaction_id).trim() !== ''
-                      ? String(row.transaction_id)
-                      : '—'}
-                  </td>
                   <td className="small">{row.service_date ? new Date(row.service_date).toLocaleString() : '-'}</td>
                 </tr>
               ))}

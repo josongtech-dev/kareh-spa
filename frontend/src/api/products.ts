@@ -13,11 +13,11 @@ export const productApi = {
     return api.get(`/products.php?action=cost_summary${qs ? `&${qs}` : ''}`);
   },
   create: (data: any) => api.post('/products.php', data),
-  update: (id: number, data: any) => api.put(`/products.php?id=${id}`, data),
-  updateStatus: (id: number, status: string) => api.put(`/products.php?id=${id}`, { status }),
+  update: (id: number, data: any) => api.put('/products.php', { ...data, id }),
+  updateStatus: (id: number, status: string) => api.put('/products.php', { id, status }),
   restock: (id: number, payload: { quantity: number; amount: number; notes?: string }) =>
-    api.post(`/products.php?id=${id}&action=restock`, payload),
+    api.post('/products.php', { id, action: 'restock', ...payload }),
   consume: (id: number, payload: { quantity: number; notes?: string }) =>
-    api.post(`/products.php?id=${id}&action=consume`, payload),
+    api.post('/products.php', { id, action: 'consume', ...payload }),
   delete: (id: number) => api.delete(`/products.php?id=${id}`),
 };

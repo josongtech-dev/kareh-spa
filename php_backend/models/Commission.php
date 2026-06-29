@@ -22,9 +22,10 @@ class Commission extends BaseModel {
      * Pool % and tax % are of gross; staff net % = pool % − tax %.
      * Spa keeps (100 − pool)% of gross; commission bucket (pool %) splits into tax + staff net.
      */
-    private function getRateConfigForService($serviceId) {
+    private function getRateConfigForService($serviceId, $staffId = null) {
         $serviceId = intval($serviceId);
         $key = $serviceId > 0 ? (string)$serviceId : '0';
+        if ($staffId !== null) $key .= '_s' . intval($staffId);
         if (isset($this->resolvedRates[$key])) {
             return $this->resolvedRates[$key];
         }
@@ -42,6 +43,25 @@ class Commission extends BaseModel {
             $taxPct = $poolPct;
         }
         $staffPct = max(0, $poolPct - $taxPct);
+
+        // Check for per-staff commission rate override
+        if ($staffId !== null) {
+            $staffId = intval($staffId);
+            $staffQuery = "SELECT commission_rate FROM staffs WHERE id = ? AND commission_rate IS NOT NULL LIMIT 1";
+            $staffStmt = $this->conn->prepare($staffQuery);
+            if ($staffStmt) {
+                $staffStmt->bind_param("i", $staffId);
+                $staffStmt->execute();
+                $staffRes = $staffStmt->get_result();
+                $staffRow = $staffRes ? $staffRes->fetch_assoc() : null;
+                if ($staffRow && isset($staffRow['commission_rate']) && $staffRow['commission_rate'] !== null) {
+                    $overrideRate = floatval($staffRow['commission_rate']);
+                    // Override just the staff rate; keep pool and tax as-is
+                    // Recalculate tax if pool is fixed
+                    $staffPct = max(0, min($overrideRate, $poolPct));
+                }
+            }
+        }
 
         $poolDec = max(0, $poolPct / 100);
         $taxDec = max(0, $taxPct / 100);
@@ -187,7 +207,10 @@ class Commission extends BaseModel {
                   (staff_id, session_id, session_service_id, service_id, source_type, amount, gross_amount, commission_pool_amount, tax_amount, staff_amount, service_profit_amount, commission_rate, payment_status) 
                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         $stmt = $this->conn->prepare($query);
-        if (!$stmt) return false;
+        if (!$stmt) {
+            error_log("Commission::create prepare failed: " . $this->conn->error);
+            return false;
+        }
 
         $staff_id = intval($data['staff_id']);
         $session_id = isset($data['session_id']) ? intval($data['session_id']) : null;
@@ -219,8 +242,13 @@ class Commission extends BaseModel {
             $rate,
             $status
         );
-        if ($stmt->execute()) {
-            return $stmt->insert_id;
+        try {
+            if ($stmt->execute()) {
+                return $stmt->insert_id;
+            }
+            error_log("Commission::create failed: " . $stmt->error . " | data=" . json_encode($data));
+        } catch (\Throwable $e) {
+            error_log("Commission::create exception: " . $e->getMessage() . " | data=" . json_encode($data));
         }
         return false;
     }
@@ -554,12 +582,14 @@ class Commission extends BaseModel {
         $gross = floatval($gross);
 
         if ($sessionId <= 0 || $sessionServiceId <= 0 || $serviceId <= 0 || $staffId <= 0 || $gross <= 0) {
+            error_log("upsertFromServiceLineResult: skip_invalid sessionId={$sessionId} ssId={$sessionServiceId} svcId={$serviceId} staffId={$staffId} gross={$gross}");
             return 'skip_invalid';
         }
 
         $existingQuery = "SELECT id, payment_status FROM {$this->table} WHERE session_service_id = ? LIMIT 1";
         $existingStmt = $this->conn->prepare($existingQuery);
         if (!$existingStmt) {
+            error_log("upsertFromServiceLineResult: existing check prepare failed: " . $this->conn->error);
             return 'error';
         }
         $existingStmt->bind_param("i", $sessionServiceId);
@@ -567,7 +597,7 @@ class Commission extends BaseModel {
         $existingRes = $existingStmt->get_result();
         $existing = $existingRes ? $existingRes->fetch_assoc() : null;
 
-        $rateCfg = $this->getRateConfigForService($serviceId);
+        $rateCfg = $this->getRateConfigForService($serviceId, $staffId);
         $pool = round($gross * $rateCfg['pool'], 2);
         $tax = round($gross * $rateCfg['tax'], 2);
         $staff = round($gross * $rateCfg['staff'], 2);
@@ -584,7 +614,7 @@ class Commission extends BaseModel {
                             SET staff_id = ?,
                                 session_id = ?,
                                 service_id = ?,
-                                source_type = 'service_line',
+                                source_type = 'primary',
                                 amount = ?,
                                 gross_amount = ?,
                                 commission_pool_amount = ?,
@@ -639,7 +669,7 @@ class Commission extends BaseModel {
             'session_id' => $sessionId,
             'session_service_id' => $sessionServiceId,
             'service_id' => $serviceId,
-            'source_type' => 'service_line',
+            'source_type' => 'primary',
             'amount' => $staff,
             'gross_amount' => $gross,
             'commission_pool_amount' => $pool,
@@ -665,7 +695,7 @@ class Commission extends BaseModel {
                          ss.service_id, ss.price
                   FROM sessions s
                   INNER JOIN session_services ss ON ss.session_id = s.id
-                  WHERE ss.status = 'completed'
+                  WHERE s.billing_status = 'paid'
                     AND ss.assigned_staff_id IS NOT NULL
                     AND ss.price > 0";
         $result = $this->conn->query($query);

@@ -15,6 +15,6 @@ export const offersApi = {
   getAll: () => api.get('/offers.php'),
   getById: (id: number) => api.get(`/offers.php?id=${id}`),
   create: (payload: OfferPayload) => api.post('/offers.php', payload),
-  update: (id: number, payload: Partial<OfferPayload>) => api.put(`/offers.php?id=${id}`, payload),
+  update: (id: number, payload: Partial<OfferPayload>) => api.put('/offers.php', { ...payload, id }),
   delete: (id: number) => api.delete(`/offers.php?id=${id}`),
 };

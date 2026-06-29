@@ -48,7 +48,7 @@ export const commissionRulesApi = {
   getAll: () => api.get<{ status: string; data: CommissionRule[] }>('/commission_rules.php'),
   create: (data: Partial<CommissionRule> & { name: string; commission_pool_rate: number; tax_rate: number }) =>
     api.post('/commission_rules.php', data),
-  update: (id: number, data: Partial<CommissionRule>) => api.put(`/commission_rules.php?id=${id}`, data),
+  update: (id: number, data: Partial<CommissionRule>) => api.put('/commission_rules.php', { ...data, id }),
   delete: (id: number) => api.delete(`/commission_rules.php?id=${id}`),
-  setDefault: (id: number) => api.post(`/commission_rules.php?id=${id}&action=set_default`),
+  setDefault: (id: number) => api.post('/commission_rules.php', { id, action: 'set_default' }),
 };

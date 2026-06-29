@@ -1,21 +1,19 @@
 import React from 'react';
 import { motion } from 'framer-motion';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { staffApi } from '../../api/staff';
 import { appointmentApi } from '../../api/appointments';
-import { serviceApi } from '../../api/services';
 import { commissionApi } from '../../api/commissions';
 import { dashboardApi } from '../../api/dashboard';
 import { getCurrentAdminRole, getCurrentAdminUser, isAttendant } from '../../adminAccess';
 import { 
   FiUsers, 
   FiCalendar, FiDollarSign, FiBox, FiUserCheck, 
-  FiTag, FiLayers, FiActivity, FiMoreHorizontal,
-  FiCheckCircle, FiX, FiChevronDown, FiBell
+  FiTag, FiLayers, FiActivity,
+  FiCheckCircle, FiBell
 } from 'react-icons/fi';
 import AdminLayout, { AdminThemeContext } from './AdminLayout';
-import AdminTable from '../../components/admin/AdminTable';
-import ServiceImageThumb from '../../components/ServiceImageThumb';
+import ConfirmModal from '../../components/admin/ConfirmModal';
 
 const AdminDashboard = () => {
   const { isDarkMode } = React.useContext(AdminThemeContext);
@@ -23,7 +21,6 @@ const AdminDashboard = () => {
   const currentUser = getCurrentAdminUser();
   const attendantView = isAttendant(currentRole);
   const currentStaffId = Number(currentUser?.id || currentUser?.staff_id || 0);
-  const navigate = useNavigate();
   const formatKes = (value: number) => `KES ${Math.round(value).toLocaleString()}`;
   
   const [staffCount, setStaffCount] = React.useState<number | string>('...');
@@ -92,7 +89,6 @@ const AdminDashboard = () => {
   }, [selectedMonth]);
 
   const [appointments, setAppointments] = React.useState<any[]>([]);
-  const [servicesCatalog, setServicesCatalog] = React.useState<any[]>([]);
   const [upcomingAlerts, setUpcomingAlerts] = React.useState<any[]>([]);
   const [pendingApprovals, setPendingApprovals] = React.useState<any[]>([]);
   const [nowTs, setNowTs] = React.useState(Date.now());
@@ -100,6 +96,8 @@ const AdminDashboard = () => {
   const [myPaidCommission, setMyPaidCommission] = React.useState<number>(0);
   const [myServicesRendered, setMyServicesRendered] = React.useState<number>(0);
   const [myLeaveCount, setMyLeaveCount] = React.useState<number>(0);
+  const [cancelTarget, setCancelTarget] = React.useState<any | null>(null);
+  const [cancelReason, setCancelReason] = React.useState('');
 
   React.useEffect(() => {
     const timer = setInterval(() => setNowTs(Date.now()), 1000);
@@ -140,10 +138,8 @@ const AdminDashboard = () => {
   React.useEffect(() => {
     const loadAppointments = async () => {
       try {
-        const [response, svcRes] = await Promise.all([appointmentApi.getAll(), serviceApi.getAll()]);
+        const response = await appointmentApi.getAll();
         const data = response.data?.data || response.data || [];
-        const svcRows = svcRes.data?.data || svcRes.data || [];
-        setServicesCatalog(Array.isArray(svcRows) ? svcRows : []);
         const rows = Array.isArray(data) ? data : [];
 
         const normalized = rows.map((a: any) => {
@@ -192,6 +188,60 @@ const AdminDashboard = () => {
     const refreshTimer = setInterval(loadAppointments, 30000);
     return () => clearInterval(refreshTimer);
   }, []);
+
+  const handleCancelBooking = async () => {
+    if (!cancelTarget) return;
+    try {
+      const payload: Record<string, unknown> = { status: 'cancelled' };
+      if (cancelReason.trim()) {
+        payload.notes = `Staff cancellation: ${cancelReason.trim()}`;
+      }
+      await appointmentApi.updateStatus(cancelTarget.id, 'cancelled');
+      setCancelTarget(null);
+      setCancelReason('');
+      const res = await appointmentApi.getAll();
+      const data = res.data?.data || res.data || [];
+      const rows = Array.isArray(data) ? data : [];
+      const normalized = rows.map((a: any) => {
+        const displayStatus =
+          a.session_status === 'In Progress'
+            ? 'In Session Progress'
+            : a.session_status === 'Completed'
+              ? 'Session Completed'
+              : (a.status || '').charAt(0).toUpperCase() + (a.status || '').slice(1);
+        const statusClass =
+          displayStatus === 'In Session Progress'
+            ? 'text-primary'
+            : displayStatus === 'Session Completed'
+              ? 'text-success'
+              : a.status === 'confirmed'
+                ? 'text-success'
+                : a.status === 'pending'
+                  ? 'text-warning'
+                  : a.status === 'cancelled'
+                    ? 'text-danger'
+                    : 'text-secondary';
+        return {
+          id: a.id,
+          name: a.customer_name,
+          service: a.service_name || 'N/A',
+          service_id: a.service_id,
+          staff: a.staff_name || 'Unassigned',
+          time: `${a.appointment_date} ${String(a.appointment_time || '').slice(0, 5)}`,
+          status: displayStatus,
+          statusClass,
+          appointment_date: a.appointment_date,
+          appointment_time: a.appointment_time,
+          raw_status: a.status,
+          session_status: a.session_status
+        };
+      });
+      setAppointments(normalized);
+    } catch {
+      setCancelTarget(null);
+      setCancelReason('');
+    }
+  };
 
   React.useEffect(() => {
     const alerts = appointments.filter((a) => {
@@ -523,82 +573,32 @@ const AdminDashboard = () => {
           </div>
         </div>
 
-        {/* Recent Appointments Section */}
-        <div className="mt-5 mb-4">
-          <div className="d-flex justify-content-between align-items-center mb-4">
-            <h2 className="h4 m-0 fw-bold">Recent Appointments</h2>
-            <Link to="/admin/bookings" className="text-purple text-decoration-none small fw-bold">VIEW ALL &rarr;</Link>
-          </div>
-          
-          <AdminTable 
-            isDarkMode={isDarkMode}
-            columns={[
-              { header: 'Customer' },
-              { header: 'Service' },
-              { header: 'Staff' },
-              { header: 'Time' },
-              { header: 'Status' },
-              { header: 'Action', align: 'end' }
-            ]}
-            data={appointments}
-            renderRow={(apt) => (
-              <tr key={apt.id} className="align-middle">
-                <td className="px-4 py-3 border-0 fw-medium">{apt.name}</td>
-                <td className="py-3 border-0 text-secondary small">
-                  <div className="d-flex align-items-center gap-2">
-                    <ServiceImageThumb
-                      imageUrl={(servicesCatalog as any[]).find((s: any) => String(s.id) === String(apt.service_id))?.image_url}
-                      alt=""
-                      size={36}
-                    />
-                    <span>{apt.service}</span>
-                  </div>
-                </td>
-                <td className="py-3 border-0 text-secondary small">{apt.staff}</td>
-                <td className="py-3 border-0 text-secondary small">{apt.time}</td>
-                <td className="py-3 border-0 small">
-                  <div className="dropdown">
-                    <button 
-                      className={`badge rounded-pill bg-opacity-10 bg-current cursor-pointer border-0 transition-all hover-scale-sm dropdown-toggle hide-caret ${apt.statusClass.replace('text-', 'bg-')}`}
-                      data-bs-toggle="dropdown" 
-                      aria-expanded="false"
-                      type="button"
-                    >
-                      <span className={`${apt.statusClass} d-flex align-items-center`}>
-                        &bull; {apt.status}
-                        <FiChevronDown className="ms-1 opacity-50" size={10} />
-                      </span>
-                    </button>
-                    <ul className={`dropdown-menu shadow-lg border-opacity-10 ${isDarkMode ? 'dropdown-menu-dark' : ''}`}>
-                      <li><span className="dropdown-item-text small text-secondary">Status managed in Appointments</span></li>
-                    </ul>
-                  </div>
-                </td>
-                <td className="px-4 py-3 border-0 text-end">
-                  <div className="dropdown">
-                    <button 
-                      className={`btn btn-sm p-1 border-0 ${isDarkMode ? 'text-white' : 'text-dark'}`}
-                      type="button"
-                      data-bs-toggle="dropdown"
-                      aria-expanded="false"
-                    >
-                      <FiMoreHorizontal size={16} />
-                    </button>
-                    <ul className={`dropdown-menu dropdown-menu-end shadow-lg border-opacity-10 ${isDarkMode ? 'dropdown-menu-dark' : ''}`}>
-                      <li><button className="dropdown-item d-flex align-items-center py-2" type="button" onClick={() => navigate(`/admin/bookings?id=${apt.id}`)}><FiActivity className="me-2 text-secondary" /> Reschedule</button></li>
-                      <li><button className="dropdown-item d-flex align-items-center py-2" type="button" onClick={() => navigate(`/admin/sessions?appointment_id=${apt.id}`)}><FiCheckCircle className="me-2 text-success" /> Open Session</button></li>
-                      <li><hr className="dropdown-divider opacity-10" /></li>
-                      <li><button className="dropdown-item d-flex align-items-center py-2 text-danger" type="button"><FiX className="me-2" /> Cancel Booking</button></li>
-                    </ul>
-                  </div>
-                </td>
-              </tr>
-            )}
-          />
-        </div>
+
           </>
         )}
       </motion.div>
+
+      <ConfirmModal
+        isOpen={!!cancelTarget}
+        onClose={() => { setCancelTarget(null); setCancelReason(''); }}
+        onConfirm={handleCancelBooking}
+        title="Cancel Booking"
+        message={`Are you sure you want to cancel the booking for "${cancelTarget?.name}"?`}
+        confirmText="Cancel Booking"
+        confirmButtonClassName="btn-warning text-dark"
+        isDarkMode={isDarkMode}
+      >
+        <div className="mb-3">
+          <label className="form-label small fw-bold text-uppercase text-secondary">Reason (optional)</label>
+          <textarea
+            className="form-control"
+            rows={2}
+            value={cancelReason}
+            onChange={(e) => setCancelReason(e.target.value)}
+            placeholder="e.g. Client requested cancellation"
+          />
+        </div>
+      </ConfirmModal>
 
       <style dangerouslySetInnerHTML={{ __html: `
         .bg-current { background-color: currentColor !important; }

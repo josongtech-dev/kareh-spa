@@ -160,6 +160,47 @@ class Product extends BaseModel {
         return $stmt->execute();
     }
 
+    public function consumeStock($productId, $quantity, $notes = '') {
+        $product = $this->getById($productId);
+        if (!$product) return false;
+        $qty = floatval($quantity);
+        if ($qty <= 0) return false;
+        $trackingMode = $product['tracking_mode'] ?? 'Units';
+        $costPrice = floatval($product['cost_price'] ?? 0);
+        if ($trackingMode === 'Units') {
+            $prev = floatval($product['stock_quantity'] ?? 0);
+            if ($prev < $qty) return false;
+            $new = $prev - $qty;
+            $status = $new <= floatval($product['reorder_level'] ?? 0) ? 'Low Stock' : ($new <= 0 ? 'Out of Stock' : 'In Stock');
+            $upd = $this->conn->prepare("UPDATE {$this->table} SET stock_quantity = ?, remaining_value = remaining_value - (? * ?), status = ? WHERE id = ?");
+            if (!$upd) return false;
+            $upd->bind_param("iddsi", $new, $qty, $costPrice, $status, $productId);
+            if (!$upd->execute()) return false;
+        } else {
+            $prev = floatval($product['quantity_remaining'] ?? 0);
+            if ($prev < $qty) return false;
+            $new = $prev - $qty;
+            $status = $new <= floatval($product['reorder_level'] ?? 0) ? 'Low Stock' : ($new <= 0 ? 'Out of Stock' : 'In Stock');
+            $upd = $this->conn->prepare("UPDATE {$this->table} SET quantity_remaining = ?, remaining_value = remaining_value - (? * ?), status = ? WHERE id = ?");
+            if (!$upd) return false;
+            $upd->bind_param("ddddsi", $new, $qty, $costPrice, $status, $productId);
+            if (!$upd->execute()) return false;
+        }
+        $this->addStockMovement([
+            'product_id' => $productId,
+            'movement_type' => 'consumption',
+            'quantity' => $qty,
+            'unit_cost' => $costPrice,
+            'total_cost' => $qty * $costPrice,
+            'previous_quantity' => $prev,
+            'new_quantity' => $new,
+            'price_vs_initial_amount' => 0,
+            'price_vs_initial_pct' => 0,
+            'notes' => $notes ?: 'Auto-consumption',
+        ]);
+        return true;
+    }
+
     public function getStockMovements($productId, $limit = 30) {
         $query = "SELECT id, product_id, movement_type, quantity, unit_cost, total_cost, previous_quantity, new_quantity, price_vs_initial_amount, price_vs_initial_pct, notes, created_at
                   FROM product_stock_movements

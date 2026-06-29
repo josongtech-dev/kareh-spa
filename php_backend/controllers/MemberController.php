@@ -18,6 +18,12 @@ class MemberController extends BaseController {
         $id = isset($_GET['id']) ? intval($_GET['id']) : null;
         $action = isset($_GET['action']) ? $_GET['action'] : '';
 
+        if ($id === null || $action === '') {
+            $body = $this->getBody();
+            if ($id === null && isset($body['id'])) $id = intval($body['id']);
+            if ($action === '' && isset($body['action'])) $action = trim((string)$body['action']);
+        }
+
         switch ($method) {
             case 'GET':
                 if ($id) {
@@ -68,8 +74,7 @@ class MemberController extends BaseController {
     }
 
     private function createMember() {
-        $data = json_decode(file_get_contents("php://input"), true);
-        if (!$data) $data = $_POST;
+        $data = $this->getBody();
 
         if (empty($data['name']) || empty($data['email']) || empty($data['password'])) {
             Response::error('Name, Email, and Password are required', 400);
@@ -93,8 +98,7 @@ class MemberController extends BaseController {
     }
 
     private function updateMember($id) {
-        $data = json_decode(file_get_contents("php://input"), true);
-        if (!$data) $data = $_POST;
+        $data = $this->getBody();
 
         if (isset($data['email']) && !filter_var((string)$data['email'], FILTER_VALIDATE_EMAIL)) {
             Response::error('A valid email address is required', 400);
@@ -122,7 +126,7 @@ class MemberController extends BaseController {
     }
 
     private function adjustPoints($id) {
-        $data = json_decode(file_get_contents("php://input"), true);
+        $data = $this->getBody();
         $pointsChange = intval($data['points_change'] ?? 0);
         if ($pointsChange === 0) {
             Response::error('Points change must be a non-zero integer', 400);

@@ -47,6 +47,19 @@ class Member extends BaseModel {
         return $result->fetch_assoc();
     }
 
+    public function findByPhone($phone) {
+        $query = "SELECT id, name, email, phone, role, loyalty_points, loyalty_tier, status
+                  FROM {$this->table}
+                  WHERE phone = ? AND role = 'customer'
+                  LIMIT 1";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return null;
+        $stmt->bind_param('s', $phone);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        return $result->fetch_assoc();
+    }
+
     public function create($data) {
         $query = "INSERT INTO {$this->table} (name, email, phone, password, role, loyalty_points, loyalty_tier, status) 
                   VALUES (?, ?, ?, ?, 'customer', ?, ?, ?)";
@@ -126,7 +139,7 @@ class Member extends BaseModel {
         return false;
     }
 
-    private function updateTierByPoints($id) {
+    public function updateTierByPoints($id) {
         // Simple logic: < 200 Bronze, 200-500 Silver, > 500 Gold
         $query = "UPDATE {$this->table} SET loyalty_tier = 
                   CASE 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -41,6 +41,16 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
   const [isLogoutConfirmOpen, setIsLogoutConfirmOpen] = useState(false);
   const [unreadFeedbackCount, setUnreadFeedbackCount] = useState(0);
   const location = useLocation();
+  const navRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (navRef.current) {
+      const activeLink = navRef.current.querySelector('.bg-purple');
+      if (activeLink) {
+        activeLink.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      }
+    }
+  }, [location.pathname]);
   const adminRole = getCurrentAdminRole();
   const adminUser = getCurrentAdminUser();
 
@@ -78,6 +88,7 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
     { title: 'Services', icon: <FiLayers />, path: '/admin/services', hidden: !canManageServices(adminRole) },
     { title: 'Add-ons', icon: <FiPackage />, path: '/admin/addons', hidden: !canManageServices(adminRole) },
     { title: 'Offers', icon: <FiGift />, path: '/admin/offers', hidden: !canManageOffers(adminRole) },
+    { title: 'Rewards', icon: <FiGift />, path: '/admin/rewards' },
     { title: 'Products', icon: <FiBox />, path: '/admin/products' },
     { title: 'Feedback', icon: <FiMessageSquare />, path: '/admin/feedback' },
     { title: 'In-House', icon: <FiHome />, path: '/admin/inhouse-requests' },
@@ -150,7 +161,7 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           </div>
 
           {/* Navigation Links */}
-          <nav className="flex-grow-1 px-3 mt-4 overflow-auto custom-scrollbar">
+          <nav ref={navRef} className="flex-grow-1 px-3 mt-4 overflow-auto custom-scrollbar">
             {menuItems.map((item) => (
               <Link 
                 key={item.path} 

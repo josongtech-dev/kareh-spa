@@ -9,15 +9,16 @@
 ```
 BaseModel (getAll, getById, delete)
   ├── Appointment
-  ├── Session          ← largest (1069 lines)
+  ├── Session          ← largest (~1070 lines)
   ├── Service
   ├── Staff
   ├── Member
   ├── Product
   ├── Offer
   ├── Expense
-  ├── Commission       ← 954 lines
+  ├── Commission       ← ~1000 lines
   ├── CommissionRule
+  ├── Reward           ← loyalty + redemption
   └── SystemSetting
 ```
 
@@ -109,11 +110,13 @@ The most complex model. Covers the entire service delivery lifecycle.
 |---|---|
 | `getAll()` | All members |
 | `getById($id)` | Single member |
+| `findByEmail($email)` | Lookup member by email (for loyalty auto-earn) |
+| `findByPhone($phone)` | Lookup member by phone |
 | `create($data)` | Create from user or standalone |
 | `update($id, $data)` | Update member |
 | `delete($id)` | Hard delete |
 | `adjustPoints($id, $points)` | Add/subtract points + auto-recalculate tier |
-| `recalculateTier($pointsBalance)` | Bronze (<200), Silver (200-500), Gold (500+) |
+| `updateTierByPoints($id)` | Bronze (<200), Silver (200-500), Gold (500+) |
 
 ---
 
@@ -187,6 +190,22 @@ pool - tax = net_amount  (staff payout)
 gross - net = service_profit  (spa retains)
 ```
 
+**Per-staff override:** If the assigned staff has a `commission_rate` set on their profile, it overrides the `staff_pct` from the service rule.
+
+---
+
+## MODEL: Reward (`models/Reward.php`)
+
+| Method | Description |
+|---|---|
+| `getAll()` | All rewards |
+| `getAllActive()` | Only Active rewards, sorted by points_required ASC |
+| `getById($id)` | Single reward |
+| `create($data)` | Create reward |
+| `update($id, $data)` | Update reward |
+| `delete($id)` | Hard delete |
+| `redeem($memberId, $rewardId)` | Transaction: deduct points, decrement stock, create redemption record, update tier |
+
 ---
 
 ## MODEL: CommissionRule (`models/CommissionRule.php`)
@@ -229,6 +248,7 @@ gross - net = service_profit  (spa retains)
 | `ExpenseController` | GET → list/detail; POST → create; PUT → update or confirm; DELETE → delete |
 | `CommissionController` | GET → list or sub-action; POST → settle |
 | `CommissionRuleController` | GET → list/detail; POST → create; PUT → update; DELETE → delete |
+| `RewardController` | GET → list/detail/history; POST → create/update/redeem; DELETE → delete |
 | `SystemSettingController` | GET → all settings; POST → bulk update |
 
 All controllers call `BaseController::getPostData()` for unified JSON + `$_POST` parsing.

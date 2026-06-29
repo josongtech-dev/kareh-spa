@@ -105,6 +105,7 @@ class StaffController extends BaseController {
         // Mapping & Hashing
         if (isset($data['idNumber'])) $data['id_number'] = $data['idNumber'];
         if (isset($data['additionalInfo'])) $data['additional_info'] = $data['additionalInfo'];
+        if (isset($data['commissionRate'])) $data['commission_rate'] = $data['commissionRate'] !== '' ? (float)$data['commissionRate'] : null;
         if (isset($data['email']) && !filter_var((string)$data['email'], FILTER_VALIDATE_EMAIL)) {
             Response::error('A valid email address is required', 400);
         }
@@ -161,6 +162,7 @@ class StaffController extends BaseController {
         // Mapping & Hashing
         if (isset($data['idNumber'])) $data['id_number'] = $data['idNumber'];
         if (isset($data['additionalInfo'])) $data['additional_info'] = $data['additionalInfo'];
+        if (isset($data['commissionRate'])) $data['commission_rate'] = $data['commissionRate'] !== '' ? (float)$data['commissionRate'] : null;
         if (!empty($data['activationPassword'])) {
             $data['activation_password'] = password_hash($data['activationPassword'], PASSWORD_DEFAULT);
         }

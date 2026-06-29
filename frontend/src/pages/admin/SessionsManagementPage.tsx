@@ -118,7 +118,10 @@ const SessionsManagementPage = () => {
 
   const [confirmAction, setConfirmAction] = useState<{ type: string; payload: any } | null>(null);
 
-  const [collapsedSessions, setCollapsedSessions] = useState<Set<number>>(new Set());
+  const [expandedSessions, setExpandedSessions] = useState<Set<number>>(new Set());
+
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
 
   const [showSuccess, setShowSuccess] = useState(false);
   const [successMsg, setSuccessMsg] = useState('');
@@ -193,8 +196,8 @@ const SessionsManagementPage = () => {
     }
   }, [searchParams, navigate]);
 
-  const toggleCollapse = (sessionId: number) => {
-    setCollapsedSessions(prev => {
+  const toggleExpand = (sessionId: number) => {
+    setExpandedSessions(prev => {
       const next = new Set(prev);
       if (next.has(sessionId)) next.delete(sessionId);
       else next.add(sessionId);
@@ -555,6 +558,14 @@ const SessionsManagementPage = () => {
     return parseFloat(String(session?.total_amount || 0));
   };
 
+  const totalPages = Math.max(1, Math.ceil(visibleSessions.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pageStart = (safePage - 1) * pageSize;
+  const pageEnd = pageStart + pageSize;
+  const pagedSessions = visibleSessions.slice(pageStart, pageEnd);
+
+  useEffect(() => { setPage(1); }, [searchQuery, selectedMonth, showBilled, pageSize]);
+
   const isPaid = (s: any) => String(s.billing_status || '').toLowerCase() === 'paid';
   const isPaymentRequested = (s: any) => String(s.billing_status || '').toLowerCase() === 'payment_requested';
   const isFailed = (s: any) => String(s.billing_status || '').toLowerCase() === 'failed';
@@ -645,15 +656,15 @@ const SessionsManagementPage = () => {
                       </div>
                     </td>
                   </tr>
-                ) : visibleSessions.map((session) => (
+                ) : pagedSessions.map((session) => (
                   <React.Fragment key={session.id}>
                     <tr
                       className={`align-middle border-bottom border-opacity-10 ${isDarkMode ? 'border-light border-opacity-5' : ''}`}
-                      style={{ borderBottomWidth: (session.service_lines || []).length > 0 && !collapsedSessions.has(session.id) ? '0px' : undefined, cursor: (session.service_lines || []).length > 0 ? 'pointer' : undefined, userSelect: 'none' }}
+                      style={{ borderBottomWidth: (session.service_lines || []).length > 0 && expandedSessions.has(session.id) ? '0px' : undefined, cursor: (session.service_lines || []).length > 0 ? 'pointer' : undefined, userSelect: 'none' }}
                       onClick={(e) => {
                         const target = e.target as HTMLElement;
                         if (target.closest('button, select, input, a, textarea, .dropdown-menu, .dropdown-item')) return;
-                        if ((session.service_lines || []).length > 0) toggleCollapse(session.id);
+                        if ((session.service_lines || []).length > 0) toggleExpand(session.id);
                       }}
                     >
                       <td className="px-4 py-3 border-0">
@@ -663,7 +674,7 @@ const SessionsManagementPage = () => {
                               className="d-inline-flex align-items-center justify-content-center flex-shrink-0 text-purple"
                               style={{ width: 18, height: 18 }}
                             >
-                              {collapsedSessions.has(session.id) ? <FiChevronRight size={14} /> : <FiChevronDown size={14} />}
+                              {expandedSessions.has(session.id) ? <FiChevronDown size={14} /> : <FiChevronRight size={14} />}
                             </span>
                           )}
                           {(session.service_lines || []).length === 0 && <span style={{ width: 18, display: 'inline-block' }} />}
@@ -775,7 +786,7 @@ const SessionsManagementPage = () => {
                       </td>
                     </tr>
 
-                    {!collapsedSessions.has(session.id) && (session.service_lines || []).length > 0 && (
+                    {expandedSessions.has(session.id) && (session.service_lines || []).length > 0 && (
                       <tr className="border-bottom border-opacity-10">
                         <td colSpan={6} className="py-0 px-0 border-0">
                           <div className="ms-4 me-4 mb-2 mt-2 overflow-hidden rounded-3" style={{ border: '1px solid rgba(128, 128, 128, 0.12)' }}>
@@ -1026,6 +1037,44 @@ const SessionsManagementPage = () => {
               </tbody>
             </table>
           </div>
+          {visibleSessions.length > 0 && (
+            <div className="d-flex flex-wrap justify-content-between align-items-center gap-2 px-3 py-3 border-top border-opacity-10">
+              <div className="small text-secondary">
+                Showing {pageStart + 1}-{Math.min(pageEnd, visibleSessions.length)} of {visibleSessions.length}
+              </div>
+              <div className="d-flex align-items-center gap-3">
+                <div className="d-flex align-items-center gap-2">
+                  <label className="small text-secondary mb-0">Rows</label>
+                  <select
+                    className="form-select form-select-sm"
+                    style={{ width: 80 }}
+                    value={pageSize}
+                    onChange={(e) => setPageSize(Number(e.target.value))}
+                  >
+                    {[15, 30, 50, 100].map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                </div>
+                <div className="d-flex gap-1">
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary rounded-pill px-3"
+                    disabled={safePage <= 1}
+                    onClick={() => setPage(p => Math.max(1, p - 1))}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline-secondary rounded-pill px-3"
+                    disabled={safePage >= totalPages}
+                    onClick={() => setPage(p => Math.min(totalPages, p + 1))}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

@@ -1,7 +1,7 @@
 import React, { useState, useContext, useEffect } from 'react';
 import { 
   FiUserPlus, FiUsers, FiSearch, FiMoreHorizontal, 
-  FiTrash2, FiStar, FiMail, FiPhone, 
+  FiTrash2, FiStar, FiMail, FiPhone, FiEdit,
   FiChevronDown, FiAward, FiTrendingUp
 } from 'react-icons/fi';
 import AdminLayout, { AdminThemeContext } from './AdminLayout';
@@ -15,6 +15,8 @@ import { memberApi } from '../../api/members';
 const MembersManagementPage = () => {
   const { isDarkMode } = useContext(AdminThemeContext);
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
+  const [editLoading, setEditLoading] = useState(false);
   const [isPointsModalOpen, setIsPointsModalOpen] = useState(false);
   const [isSuccessModalOpen, setIsSuccessModalOpen] = useState(false);
   const [successMessage, setSuccessMessage] = useState('');
@@ -39,6 +41,17 @@ const MembersManagementPage = () => {
     loyalty_tier: 'Bronze',
     status: 'Active'
   });
+
+  const initEditForm = (member: any) => ({
+    name: member.name || '',
+    email: member.email || '',
+    phone: member.phone || '',
+    loyalty_points: member.loyalty_points ?? 0,
+    loyalty_tier: member.loyalty_tier || 'Bronze',
+    status: member.status || 'Active',
+  });
+  const [editFormData, setEditFormData] = useState(initEditForm({}));
+  const [editMemberId, setEditMemberId] = useState<number | null>(null);
 
   const fetchData = async () => {
     try {
@@ -127,6 +140,44 @@ const MembersManagementPage = () => {
   const requestDeleteMember = (id: number) => {
     setMemberToDelete(id);
     setIsConfirmModalOpen(true);
+  };
+
+  const openEditModal = (member: any) => {
+    setEditMemberId(member.id);
+    setEditFormData(initEditForm(member));
+    setIsEditModalOpen(true);
+  };
+
+  const handleEditChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    setEditFormData({ ...editFormData, [e.target.name]: e.target.value });
+  };
+
+  const handleEditSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (editMemberId === null) return;
+    setEditLoading(true);
+    try {
+      await memberApi.update(editMemberId, {
+        name: editFormData.name,
+        email: editFormData.email,
+        phone: editFormData.phone,
+        loyalty_points: Number(editFormData.loyalty_points),
+        loyalty_tier: editFormData.loyalty_tier,
+        status: editFormData.status,
+      });
+      setEditLoading(false);
+      setIsEditModalOpen(false);
+      setEditMemberId(null);
+      setSuccessMessage("Member profile updated successfully.");
+      setIsSuccessModalOpen(true);
+      fetchData();
+    } catch (error) {
+      console.error('Error updating member:', error);
+      setEditLoading(false);
+      setFeedbackTitle('Update Failed');
+      setFeedbackMessage('Failed to update member profile.');
+      setIsFeedbackModalOpen(true);
+    }
   };
 
   const handleDeleteMember = async () => {
@@ -312,6 +363,7 @@ const MembersManagementPage = () => {
                     <FiMoreHorizontal size={18} />
                   </button>
                   <ul className={`dropdown-menu dropdown-menu-end shadow-lg border-opacity-10 ${isDarkMode ? 'dropdown-menu-dark' : ''}`}>
+                    <li><button className="dropdown-item d-flex align-items-center py-2" type="button" onClick={() => openEditModal(member)}><FiEdit className="me-2" /> Edit Profile</button></li>
                     <li><button className="dropdown-item d-flex align-items-center py-2" type="button" onClick={() => { setSelectedMember(member); setIsPointsModalOpen(true); }}><FiAward className="me-2" /> Adjust Points</button></li>
                     <li><button className="dropdown-item d-flex align-items-center py-2 text-danger" type="button" onClick={() => requestDeleteMember(member.id)}><FiTrash2 className="me-2" /> Revoke</button></li>
                   </ul>
@@ -346,6 +398,56 @@ const MembersManagementPage = () => {
             <button className="btn btn-purple rounded-pill flex-grow-1" onClick={handleAdjustPoints}>APPLY CHANGE</button>
           </div>
         </div>
+      </AdminModal>
+
+      {/* Edit Member Modal */}
+      <AdminModal
+        isOpen={isEditModalOpen}
+        onClose={() => { setIsEditModalOpen(false); setEditMemberId(null); }}
+        title="Edit Member Profile"
+        subtitle={`Update details for ${editFormData.name || ''}`}
+        isDarkMode={isDarkMode}
+      >
+        <form onSubmit={handleEditSubmit}>
+          <div className="p-1">
+            <div className="mb-4">
+              <label className="form-label small fw-bold text-uppercase tracking-wider text-secondary">Full Name</label>
+              <input type="text" name="name" required className="form-control glass-input-premium" value={editFormData.name} onChange={handleEditChange} />
+            </div>
+            <div className="mb-4">
+              <label className="form-label small fw-bold text-uppercase tracking-wider text-secondary">Email Address</label>
+              <input type="email" name="email" required className="form-control glass-input-premium" value={editFormData.email} onChange={handleEditChange} />
+            </div>
+            <div className="mb-4">
+              <label className="form-label small fw-bold text-uppercase tracking-wider text-secondary">Phone Number</label>
+              <input type="tel" name="phone" className="form-control glass-input-premium" value={editFormData.phone} onChange={handleEditChange} />
+            </div>
+            <div className="row g-3 mb-4">
+              <div className="col-6">
+                <label className="form-label small fw-bold text-uppercase tracking-wider text-secondary">Loyalty Tier</label>
+                <select name="loyalty_tier" className="form-select glass-input-premium" value={editFormData.loyalty_tier} onChange={handleEditChange}>
+                  <option value="Bronze">Bronze</option>
+                  <option value="Silver">Silver</option>
+                  <option value="Gold">Gold</option>
+                </select>
+              </div>
+              <div className="col-6">
+                <label className="form-label small fw-bold text-uppercase tracking-wider text-secondary">Status</label>
+                <select name="status" className="form-select glass-input-premium" value={editFormData.status} onChange={handleEditChange}>
+                  <option value="Active">Active</option>
+                  <option value="Inactive">Inactive</option>
+                  <option value="Suspended">Suspended</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div className="border-top border-opacity-10 pt-4 d-flex justify-content-end align-items-center gap-3">
+            <button type="button" className="btn px-4 py-2 rounded-pill fw-bold text-secondary" onClick={() => { setIsEditModalOpen(false); setEditMemberId(null); }}>CANCEL</button>
+            <button type="submit" className="btn btn-purple px-5 py-2 rounded-pill fw-bold shadow-lg" disabled={editLoading}>
+              {editLoading ? 'SAVING...' : 'SAVE CHANGES'}
+            </button>
+          </div>
+        </form>
       </AdminModal>
 
       {/* Add Member Modal */}

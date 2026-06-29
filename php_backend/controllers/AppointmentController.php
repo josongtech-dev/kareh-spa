@@ -3,6 +3,7 @@ require_once __DIR__ . '/BaseController.php';
 require_once __DIR__ . '/../models/Appointment.php';
 require_once __DIR__ . '/../utils/Response.php';
 require_once __DIR__ . '/../utils/AppointmentMailer.php';
+require_once __DIR__ . '/../utils/SmsSender.php';
 require_once __DIR__ . '/../utils/ActivityLogger.php';
 
 class AppointmentController extends BaseController {
@@ -19,6 +20,14 @@ class AppointmentController extends BaseController {
         $method = $_SERVER['REQUEST_METHOD'];
         $id = isset($_GET['id']) ? intval($_GET['id']) : null;
         $customerEmail = isset($_GET['customer_email']) ? trim($_GET['customer_email']) : '';
+        $dateFrom = isset($_GET['date_from']) ? trim($_GET['date_from']) : '';
+        $dateTo = isset($_GET['date_to']) ? trim($_GET['date_to']) : '';
+        $checkDate = isset($_GET['check_date']) ? trim($_GET['check_date']) : '';
+
+        if ($id === null) {
+            $body = $this->getBody();
+            if ($id === null && isset($body['id'])) $id = intval($body['id']);
+        }
 
         switch ($method) {
             case 'GET':
@@ -26,6 +35,10 @@ class AppointmentController extends BaseController {
                     $this->getAppointment($id);
                 } elseif ($customerEmail !== '') {
                     $this->getAppointmentsByCustomerEmail($customerEmail);
+                } elseif ($checkDate !== '') {
+                    $this->checkAvailability($checkDate);
+                } elseif ($dateFrom !== '' && $dateTo !== '') {
+                    $this->getAppointmentsByDateRange($dateFrom, $dateTo);
                 } else {
                     $this->getAllAppointments();
                 }
@@ -58,6 +71,44 @@ class AppointmentController extends BaseController {
         Response::json($appointments);
     }
 
+    private function getAppointmentsByDateRange($dateFrom, $dateTo) {
+        $staffId = isset($_GET['staff_id']) ? intval($_GET['staff_id']) : null;
+        $appointments = $this->appointmentModel->getByDateRange($dateFrom, $dateTo, $staffId);
+        Response::json($appointments);
+    }
+
+    private function checkAvailability($date) {
+        $staffId = isset($_GET['staff_id']) && $_GET['staff_id'] !== '' ? intval($_GET['staff_id']) : null;
+        $bookedSlots = $this->appointmentModel->getByDateRange($date, $date, $staffId);
+
+        $bookedTimes = [];
+        foreach ($bookedSlots as $apt) {
+            $time = substr($apt['appointment_time'] ?? '', 0, 5);
+            $status = strtolower($apt['status'] ?? '');
+            if ($status !== 'cancelled') {
+                $bookedTimes[] = $time;
+            }
+        }
+        $bookedTimes = array_unique($bookedTimes);
+        sort($bookedTimes);
+
+        $allSlots = [];
+        for ($h = 6; $h <= 21; $h++) {
+            for ($m = 0; $m < 60; $m += 30) {
+                $allSlots[] = sprintf('%02d:%02d', $h, $m);
+            }
+        }
+
+        $available = array_values(array_diff($allSlots, $bookedTimes));
+
+        Response::json([
+            'date' => $date,
+            'staff_id' => $staffId,
+            'available_slots' => $available,
+            'booked_slots' => array_values($bookedTimes),
+        ]);
+    }
+
     private function getAppointmentsByCustomerEmail($email) {
         $appointments = $this->appointmentModel->getByCustomerEmail($email);
         Response::json($appointments);
@@ -73,7 +124,7 @@ class AppointmentController extends BaseController {
     }
 
     private function createAppointment() {
-        $data = json_decode(file_get_contents("php://input"), true);
+        $data = $this->getBody();
         
         if (!$data) {
             $data = $_POST;
@@ -104,12 +155,25 @@ class AppointmentController extends BaseController {
         }
         $data['customer_email'] = $email;
 
+        $staffId = isset($data['staff_id']) && $data['staff_id'] !== '' ? intval($data['staff_id']) : null;
+        $conflicts = $this->appointmentModel->getConflictingAppointments(
+            $data['appointment_date'], $data['appointment_time'], $staffId
+        );
+        if (!empty($conflicts)) {
+            $conflictNames = array_map(function ($c) {
+                return $c['customer_name'] . ($c['staff_name'] ? ' (' . $c['staff_name'] . ')' : '');
+            }, $conflicts);
+            Response::error('Time slot conflicts with existing booking(s): ' . implode(', ', $conflictNames), 409);
+        }
+
         $id = $this->appointmentModel->create($data);
 
         if ($id) {
             $newAppointment = $this->appointmentModel->getById($id);
             $manageToken = $this->appointmentModel->createOrRefreshManageToken($id);
             AppointmentMailer::sendBookingReceived($newAppointment, $manageToken ?: null);
+            SmsSender::sendBookingReceived($newAppointment);
+            SmsSender::sendAdminNotification("New booking #{$id} from {$newAppointment['customer_name']} for {$newAppointment['service_name']} on {$newAppointment['appointment_date']}");
             ActivityLogger::logFromAuthData($this->conn, 'appointment', 'create', "Created appointment #{$id}", $this->authData, 'appointment', $id);
             Response::json(['message' => 'Appointment created successfully', 'appointment' => $newAppointment], 201);
         } else {
@@ -118,7 +182,7 @@ class AppointmentController extends BaseController {
     }
 
     private function updateAppointment($id) {
-        $data = json_decode(file_get_contents("php://input"), true);
+        $data = $this->getBody();
         
         if (!$data) {
             $data = $_POST;
@@ -129,6 +193,19 @@ class AppointmentController extends BaseController {
             Response::error('Appointment not found', 404);
         }
 
+        $date = $data['appointment_date'] ?? $existingAppointment['appointment_date'];
+        $time = $data['appointment_time'] ?? $existingAppointment['appointment_time'];
+        $staffId = isset($data['staff_id']) && $data['staff_id'] !== ''
+            ? intval($data['staff_id'])
+            : (isset($existingAppointment['staff_id']) ? intval($existingAppointment['staff_id']) : null);
+        $conflicts = $this->appointmentModel->getConflictingAppointments($date, $time, $staffId, $id);
+        if (!empty($conflicts)) {
+            $conflictNames = array_map(function ($c) {
+                return $c['customer_name'] . ($c['staff_name'] ? ' (' . $c['staff_name'] . ')' : '');
+            }, $conflicts);
+            Response::error('Time slot conflicts with existing booking(s): ' . implode(', ', $conflictNames), 409);
+        }
+
         if ($this->appointmentModel->update($id, $data)) {
             $updatedAppointment = $this->appointmentModel->getById($id);
 
@@ -136,6 +213,8 @@ class AppointmentController extends BaseController {
             $currentStatus = strtolower((string) ($updatedAppointment['status'] ?? ''));
             if ($previousStatus !== 'confirmed' && $currentStatus === 'confirmed') {
                 AppointmentMailer::sendBookingConfirmed($updatedAppointment);
+                SmsSender::sendBookingConfirmed($updatedAppointment);
+                SmsSender::sendAdminNotification("Booking #{$id} ({$updatedAppointment['customer_name']}) CONFIRMED for {$updatedAppointment['service_name']} on {$updatedAppointment['appointment_date']}");
             }
 
             ActivityLogger::logFromAuthData($this->conn, 'appointment', 'update', "Updated appointment #{$id}", $this->authData, 'appointment', $id);

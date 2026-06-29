@@ -37,6 +37,8 @@ const BookingPage: React.FC = () => {
     appointment_time: '',
     notes: ''
   });
+  const [availableSlots, setAvailableSlots] = useState<string[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
 
   const fetchData = async () => {
     try {
@@ -63,6 +65,22 @@ const BookingPage: React.FC = () => {
     const d = new Date();
     return d.toISOString().slice(0, 10);
   }, []);
+
+  useEffect(() => {
+    if (!formData.appointment_date) {
+      setAvailableSlots([]);
+      return;
+    }
+    const staffId = selectedSpecialist ? Number(selectedSpecialist) : undefined;
+    setSlotsLoading(true);
+    appointmentApi.checkAvailability(formData.appointment_date, staffId)
+      .then(res => {
+        const data = res.data?.data ?? res.data;
+        setAvailableSlots(data?.available_slots ?? []);
+      })
+      .catch(() => setAvailableSlots([]))
+      .finally(() => setSlotsLoading(false));
+  }, [formData.appointment_date, selectedSpecialist]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
@@ -401,15 +419,43 @@ const BookingPage: React.FC = () => {
                       </div>
                       <div className="col-md-6 mt-4">
                         <label className="form-label small tracking-widest text-uppercase opacity-50">Preferred Time</label>
-                        <div className="dt-input-wrap">
-                          <FaClock className="dt-input-icon" />
-                          <input type="time" name="appointment_time" required
-                            className="form-control bg-transparent border-white border-opacity-10 text-white rounded-4 p-2 Outfit shadow-none dt-input"
-                            style={{ colorScheme: 'dark' }}
-                            min={minTime}
-                            value={formData.appointment_time}
-                            onChange={handleInputChange} />
-                        </div>
+                        {slotsLoading ? (
+                          <div className="text-center py-3">
+                            <div className="spinner-border spinner-border-sm text-white opacity-50" role="status" />
+                          </div>
+                        ) : availableSlots.length > 0 ? (
+                          <div className="d-flex flex-wrap gap-2" style={{ maxHeight: 160, overflowY: 'auto' }}>
+                            {availableSlots.map(slot => (
+                              <button
+                                key={slot}
+                                type="button"
+                                className={`btn btn-sm rounded-pill px-3 py-1 ${formData.appointment_time === slot ? '' : ''}`}
+                                style={{
+                                  fontSize: 13,
+                                  borderWidth: 1,
+                                  background: formData.appointment_time === slot ? '#6a0dad' : 'rgba(255,255,255,0.05)',
+                                  border: formData.appointment_time === slot ? '1px solid #6a0dad' : '1px solid rgba(255,255,255,0.15)',
+                                  color: '#fff',
+                                }}
+                                onClick={() => setFormData(prev => ({ ...prev, appointment_time: slot }))}
+                              >
+                                {slot}
+                              </button>
+                            ))}
+                          </div>
+                        ) : formData.appointment_date ? (
+                          <div className="text-white-50 small py-2">No available slots. Try another date.</div>
+                        ) : (
+                          <div className="dt-input-wrap">
+                            <FaClock className="dt-input-icon" />
+                            <input type="time" name="appointment_time" required
+                              className="form-control bg-transparent border-white border-opacity-10 text-white rounded-4 p-2 Outfit shadow-none dt-input"
+                              style={{ colorScheme: 'dark' }}
+                              min={minTime}
+                              value={formData.appointment_time}
+                              onChange={handleInputChange} />
+                          </div>
+                        )}
                       </div>
 
                       <div className="col-12 mt-5">

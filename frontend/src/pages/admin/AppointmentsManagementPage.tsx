@@ -84,19 +84,24 @@ const AppointmentsManagementPage = () => {
         'pending': 'text-warning',
         'cancelled': 'text-danger',
         'completed': 'text-info',
-        'session_created': 'text-primary'
+        'in_session_progress': 'text-primary',
+        'session_completed': 'text-success'
       };
 
       const aptData = (aptRes.data?.data || aptRes.data || []).map((a: any) => ({
         ...a,
         statusLabel:
-          a.session_status === 'Created'
-            ? 'Session Created'
-            : a.status.charAt(0).toUpperCase() + a.status.slice(1),
+          a.session_status === 'In Progress' || a.session_status === 'Finalizing'
+            ? 'In Session Progress'
+            : a.session_status === 'Completed'
+              ? 'Session Completed'
+              : a.status.charAt(0).toUpperCase() + a.status.slice(1),
         statusClass:
-          a.session_status === 'Created'
-            ? statusClasses['session_created']
-            : statusClasses[a.status] || 'text-secondary'
+          a.session_status === 'In Progress' || a.session_status === 'Finalizing'
+            ? statusClasses['in_session_progress']
+            : a.session_status === 'Completed'
+              ? statusClasses['session_completed']
+              : statusClasses[a.status] || 'text-secondary'
       }));
 
       const sorted = [...aptData].sort((a: any, b: any) => {
@@ -155,12 +160,14 @@ const AppointmentsManagementPage = () => {
     return nowTs >= (startMs - 30 * 60 * 1000);
   };
 
-  const isSessionCreated = (apt: any) =>
-    apt?.session_status === 'Created';
+  const isInSessionProgress = (apt: any) =>
+    apt?.session_status === 'In Progress' || apt?.session_status === 'Finalizing';
+  const isSessionCompleted = (apt: any) => apt?.session_status === 'Completed';
+  const isSessionLocked = (apt: any) => isInSessionProgress(apt) || isSessionCompleted(apt);
 
   const canCancelAppointment = (apt: any) =>
     fullAppointmentActions &&
-    !isSessionCreated(apt) &&
+    !isSessionLocked(apt) &&
     apt.status !== 'cancelled' &&
     apt.status !== 'completed';
 
@@ -442,7 +449,8 @@ const AppointmentsManagementPage = () => {
       }
       if (statusFilter === 'pending') return apt.status === 'pending' && !apt.session_id;
       if (statusFilter === 'confirmed') return apt.status === 'confirmed' && !apt.session_id;
-      if (statusFilter === 'session_created') return isSessionCreated(apt);
+      if (statusFilter === 'in_session_progress') return isInSessionProgress(apt);
+      if (statusFilter === 'session_completed') return isSessionCompleted(apt);
       if (statusFilter === 'cancelled') return apt.status === 'cancelled';
       if (statusFilter === 'completed') return apt.status === 'completed' && !apt.session_id;
       return true;
@@ -577,8 +585,9 @@ const AppointmentsManagementPage = () => {
                   <option value="attention">Needs Attention (Default)</option>
                   <option value="pending">Pending Approval</option>
                   <option value="confirmed">Confirmed</option>
-                  <option value="session_created">Session Created</option>
-                  <option value="completed">Completed</option>
+                  <option value="in_session_progress">In Session Progress</option>
+                  <option value="session_completed">Session Completed</option>
+                  <option value="completed">Completed (No Session)</option>
                   <option value="cancelled">Cancelled</option>
                   <option value="all">All</option>
                 </select>
@@ -600,7 +609,7 @@ const AppointmentsManagementPage = () => {
             { header: 'Client' },
             { header: 'Service' },
             { header: 'Practitioner' },
-            { header: 'Date & Time' },
+            { header: 'Date, Time & Countdown' },
             { header: 'Status', align: 'center' },
             { header: 'Action', align: 'end' as const }
           ]}
@@ -629,22 +638,26 @@ const AppointmentsManagementPage = () => {
               <td className="py-4 border-0">
                 <div className="small fw-medium">{apt.appointment_date}</div>
                 <div className="x-small text-secondary">{apt.appointment_time}</div>
-                {isSessionCreated(apt) ? (
-                  <div className="x-small text-primary fw-bold mt-1">Session created</div>
-                ) : (
-                  (() => {
-                    const startTs = getAppointmentStartMs(apt);
-                    if (!startTs) return null;
-                    const diff = startTs - nowTs;
-                    if (diff > 0) {
-                      return <div className="x-small text-primary fw-bold mt-1">Starts in {formatCountdown(diff)}</div>;
-                    }
-                    return <div className="x-small text-secondary mt-1">Started {formatCountdown(Math.abs(diff))} ago</div>;
-                  })()
-                )}
+                {(() => {
+                  if (isInSessionProgress(apt)) return null;
+                  if (isSessionCompleted(apt)) {
+                    return (
+                      <div className="x-small text-success fw-bold mt-1">
+                        Completed at {apt.session_end_time ? new Date(apt.session_end_time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'N/A'}
+                      </div>
+                    );
+                  }
+                  const startTs = getAppointmentStartMs(apt);
+                  if (!startTs) return null;
+                  const diff = startTs - nowTs;
+                  if (diff > 0) {
+                    return <div className="x-small text-primary fw-bold mt-1">Starts in {formatCountdown(diff)}</div>;
+                  }
+                  return <div className="x-small text-secondary mt-1">Started {formatCountdown(Math.abs(diff))} ago</div>;
+                })()}
               </td>
               <td className="py-4 border-0 text-center">
-                {isSessionCreated(apt) ? (
+                {isSessionLocked(apt) ? (
                   <span className={`badge rounded-pill bg-opacity-10 d-inline-flex align-items-center px-3 py-2 border-0 ${apt.statusClass.replace('text-', 'bg-')}`}>
                     <span className={`${apt.statusClass} d-flex align-items-center`}>&bull; {apt.statusLabel}</span>
                   </span>
@@ -674,12 +687,12 @@ const AppointmentsManagementPage = () => {
                 )}
               </td>
               <td className="px-4 py-4 border-0 text-end">
-                {isSessionCreated(apt) ? (
+                {isSessionLocked(apt) ? (
                   <button
                     className="btn btn-sm btn-purple-outline rounded-pill px-3 py-2 fw-bold x-small"
                     onClick={() => openAppointmentDetails(apt)}
                   >
-                    VIEW SESSION
+                    VIEW DETAILS
                   </button>
                 ) : (
                   <div className="dropdown">
@@ -1086,9 +1099,6 @@ const AppointmentsManagementPage = () => {
             <div className="col-md-6"><strong>Time:</strong> {selectedAppointmentDetails.appointment_time}</div>
             <div className="col-md-6"><strong>Status:</strong> {selectedAppointmentDetails.statusLabel || selectedAppointmentDetails.status}</div>
             <div className="col-md-6"><strong>Session Status:</strong> {selectedAppointmentDetails.session_status || 'Not started'}</div>
-            {selectedAppointmentDetails.session_code && (
-              <div className="col-md-6"><strong>Session Code:</strong> {selectedAppointmentDetails.session_code}</div>
-            )}
             <div className="col-12"><strong>Notes:</strong> {selectedAppointmentDetails.notes || 'No notes provided.'}</div>
           </div>
         ) : (

@@ -192,10 +192,33 @@ SET @s := IF(IFNULL(@ai, '') NOT LIKE '%auto_increment%',
   'SELECT 1');
 PREPARE stmt FROM @s; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 
+-- Renumber id=0 rows (created before AUTO_INCREMENT was applied)
+SET @next := (SELECT COALESCE(MAX(id), 0) FROM addons);
+UPDATE addons SET id = (@next := @next + 1) WHERE id = 0;
+
+SET @next := (SELECT COALESCE(MAX(id), 0) FROM expenses);
+UPDATE expenses SET id = (@next := @next + 1) WHERE id = 0;
+
+SET @pk := (
+  SELECT COUNT(*) FROM information_schema.TABLE_CONSTRAINTS
+  WHERE TABLE_SCHEMA = DATABASE()
+    AND TABLE_NAME = 'expenses'
+    AND CONSTRAINT_TYPE = 'PRIMARY KEY'
+);
+SET @s := IF(@pk = 0, 'ALTER TABLE expenses ADD PRIMARY KEY (id)', 'SELECT 1');
+PREPARE stmt FROM @s; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
 SET @ai := (SELECT EXTRA FROM information_schema.COLUMNS
   WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'addons' AND COLUMN_NAME = 'id');
 SET @s := IF(IFNULL(@ai, '') NOT LIKE '%auto_increment%',
   'ALTER TABLE addons MODIFY COLUMN id INT AUTO_INCREMENT',
+  'SELECT 1');
+PREPARE stmt FROM @s; EXECUTE stmt; DEALLOCATE PREPARE stmt;
+
+SET @ai := (SELECT EXTRA FROM information_schema.COLUMNS
+  WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'expenses' AND COLUMN_NAME = 'id');
+SET @s := IF(IFNULL(@ai, '') NOT LIKE '%auto_increment%',
+  'ALTER TABLE expenses MODIFY COLUMN id INT AUTO_INCREMENT',
   'SELECT 1');
 PREPARE stmt FROM @s; EXECUTE stmt; DEALLOCATE PREPARE stmt;
 

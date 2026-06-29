@@ -147,6 +147,57 @@ class Service extends BaseModel {
         }
     }
 
+    public function getLinkedProducts($serviceId) {
+        $query = "SELECT sp.id, sp.product_id, sp.quantity, p.name AS product_name,
+                         p.stock_quantity, p.quantity_remaining, p.tracking_mode, p.quantity_unit
+                  FROM service_products sp
+                  LEFT JOIN products p ON p.id = sp.product_id
+                  WHERE sp.service_id = ?
+                  ORDER BY p.name";
+        $stmt = $this->conn->prepare($query);
+        if (!$stmt) return [];
+        $stmt->bind_param("i", $serviceId);
+        $stmt->execute();
+        $result = $stmt->get_result();
+        $products = [];
+        if ($result) {
+            while ($row = $result->fetch_assoc()) {
+                $products[] = $row;
+            }
+        }
+        $stmt->close();
+        return $products;
+    }
+
+    public function setLinkedProducts($serviceId, $products) {
+        $serviceId = intval($serviceId);
+        if ($serviceId <= 0) return false;
+
+        $deleteStmt = $this->conn->prepare("DELETE FROM service_products WHERE service_id = ?");
+        if (!$deleteStmt) return false;
+        $deleteStmt->bind_param("i", $serviceId);
+        $deleteStmt->execute();
+        $deleteStmt->close();
+
+        if (empty($products)) return true;
+
+        $insertStmt = $this->conn->prepare("INSERT INTO service_products (service_id, product_id, quantity) VALUES (?, ?, ?)");
+        if (!$insertStmt) return false;
+
+        foreach ($products as $p) {
+            $productId = intval($p['product_id'] ?? 0);
+            $quantity = floatval($p['quantity'] ?? 1);
+            if ($productId <= 0) continue;
+            $insertStmt->bind_param("iid", $serviceId, $productId, $quantity);
+            if (!$insertStmt->execute()) {
+                $insertStmt->close();
+                return false;
+            }
+        }
+        $insertStmt->close();
+        return true;
+    }
+
     private function resolveCategoryId($categoryId = null, $categoryName = null) {
         if (!empty($categoryId)) {
             return (int) $categoryId;

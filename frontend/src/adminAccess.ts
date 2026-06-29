@@ -1,4 +1,4 @@
-export type AdminRole = 'owner' | 'manager' | 'receptionist' | 'attendant' | 'unknown';
+export type AdminRole = 'owner' | 'admin' | 'manager' | 'receptionist' | 'attendant' | 'unknown';
 
 const normalizeRoleValue = (value: string): string =>
   value
@@ -24,6 +24,7 @@ export const getCurrentAdminRole = (): AdminRole => {
   );
 
   if (normalized === 'owner' || normalized.includes('owner')) return 'owner';
+  if (normalized === 'admin' || normalized.includes('administrator')) return 'admin';
   if (normalized === 'manager') return 'manager';
   if (normalized === 'receptionist') return 'receptionist';
   if (normalized === 'attendant' || normalized === 'staff attendant' || normalized.includes('attendant')) return 'attendant';
@@ -34,14 +35,14 @@ export const isOwner = (role: AdminRole): boolean => role === 'owner';
 export const isManager = (role: AdminRole): boolean => role === 'manager';
 export const isReceptionist = (role: AdminRole): boolean => role === 'receptionist';
 export const isAttendant = (role: AdminRole): boolean => role === 'attendant';
-export const isManagerOrOwner = (role: AdminRole): boolean => role === 'manager' || role === 'owner';
+export const isManagerOrOwner = (role: AdminRole): boolean => role === 'manager' || role === 'owner' || role === 'admin';
 
 export const canManageServices = (role: AdminRole): boolean => isManagerOrOwner(role);
 export const canManageOffers = (role: AdminRole): boolean => isManagerOrOwner(role);
 export const canAddOrEditProducts = (role: AdminRole): boolean => isManagerOrOwner(role) || isReceptionist(role);
 export const canDeleteProducts = (role: AdminRole): boolean => isManager(role) || isOwner(role);
 export const canSeeCommissions = (role: AdminRole): boolean => isManagerOrOwner(role) || isAttendant(role);
-export const canSeeAnalytics = (role: AdminRole): boolean => isManagerOrOwner(role);
+export const canSeeAnalytics = (role: AdminRole): boolean => isManagerOrOwner(role) || isReceptionist(role);
 export const canCreateAdmin = (role: AdminRole): boolean => isManagerOrOwner(role);
 
 /** Expenses: managers & owners (full); receptionists may record and view only. */

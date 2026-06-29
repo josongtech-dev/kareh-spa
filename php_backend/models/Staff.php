@@ -40,9 +40,16 @@ class Staff extends BaseModel {
     }
 
     public function create($data) {
-        $query = "INSERT INTO {$this->table} (name, username, email, phone, id_number, role, skill, additional_info, image_path, activation_password, status, created_by) 
-                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
-                  
+        $hasRate = isset($data['commission_rate']) && $data['commission_rate'] !== '' && $data['commission_rate'] !== null;
+        
+        if ($hasRate) {
+            $query = "INSERT INTO {$this->table} (name, username, email, phone, id_number, role, skill, commission_rate, additional_info, image_path, activation_password, status, created_by) 
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        } else {
+            $query = "INSERT INTO {$this->table} (name, username, email, phone, id_number, role, skill, additional_info, image_path, activation_password, status, created_by) 
+                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        }
+                   
         $stmt = $this->conn->prepare($query);
         if (!$stmt) return false;
 
@@ -53,13 +60,18 @@ class Staff extends BaseModel {
         $id_number = $data['id_number'] ?? '';
         $role = $data['role'] ?? '';
         $skill = $data['skill'] ?? '';
+        $commission_rate = $hasRate ? (float)$data['commission_rate'] : null;
         $additional_info = $data['additional_info'] ?? '';
         $image_path = $data['image_path'] ?? '';
         $activation_password = $data['activation_password'] ?? '';
         $status = $data['status'] ?? 'Active';
         $created_by = (int)($data['created_by'] ?? 1);
 
-        $stmt->bind_param("sssssssssssi", $name, $username, $email, $phone, $id_number, $role, $skill, $additional_info, $image_path, $activation_password, $status, $created_by);
+        if ($hasRate) {
+            $stmt->bind_param("sssssssdssssi", $name, $username, $email, $phone, $id_number, $role, $skill, $commission_rate, $additional_info, $image_path, $activation_password, $status, $created_by);
+        } else {
+            $stmt->bind_param("sssssssssssi", $name, $username, $email, $phone, $id_number, $role, $skill, $additional_info, $image_path, $activation_password, $status, $created_by);
+        }
         
         if ($stmt->execute()) {
             return $stmt->insert_id;
@@ -74,7 +86,8 @@ class Staff extends BaseModel {
         
         $fields = [
             'name' => 's', 'username' => 's', 'email' => 's', 'phone' => 's', 
-            'id_number' => 's', 'role' => 's', 'skill' => 's', 'additional_info' => 's', 
+            'id_number' => 's', 'role' => 's', 'skill' => 's', 'commission_rate' => 'd',
+            'additional_info' => 's', 
             'image_path' => 's', 'status' => 's', 'activation_password' => 's', 
             'password' => 's', 'created_by' => 'i'
         ];

@@ -921,32 +921,39 @@ MAIL_FROM_NAME=Kareh's Spa
 
 ### 13.2 Features (not implemented at all)
 
-- [ ] Payment gateway integration (M-Pesa, Stripe)
-- [ ] Invoice/receipt PDF generation
-- [ ] SMS notifications
-- [ ] Customer forgot-password flow
-- [ ] Customer profile editing
-- [ ] Calendar/grid view for appointments
-- [ ] Time-slot availability / conflict detection
 - [ ] Recurring appointments
-- [ ] Product auto-consumption during sessions
-- [ ] Reward redemption (points spending)
 - [ ] Multi-branch support
 - [ ] Supplier/vendor management
 - [ ] Purchase orders
 - [ ] Tax configuration per service/product
 - [ ] Staff leave request/approval
-- [ ] Audit log display UI
+- [ ] Payment gateway integration (M-Pesa, Stripe) — PesaPal is partially wired
 
 ### 13.3 Feature Enhancements (partially implemented)
 
-- [ ] **Loyalty:** Auto-earn points from spending, redemption system, expiry
-- [ ] **Analytics:** Charts/graphs, P&L report, CSV/PDF export, trend analysis
-- [ ] **Walk-in requests:** Admin approval workflow, status update endpoint
-- [ ] **Commissions:** Per-staff commission rate override
 - [ ] **Sessions:** Row-level locking for financial operations
+- [ ] **Audit log:** UI for browsing/searching audit logs
+- [ ] **Rewards:** Admin CRUD UI for rewards management
+- [ ] **Customer self-service:** Forgot password flow, full profile editing from member portal
 
-### 13.4 Tech Debt
+### 13.4 Recently Implemented (2026-06)
+
+The following features were previously listed as pending and are now complete:
+
+- **Invoice/Receipt PDF generation** — jsPDF-based invoice download from receipt modal and sessions page
+- **SMS notifications** — via SmsSender utility, triggered on payment, appointment creation
+- **Customer profile editing** — Edit Member modal on admin MembersManagementPage
+- **Calendar/grid view for appointments** — FullCalendar integration on AppointmentsManagementPage
+- **Time-slot availability / conflict detection** — Available slots on BookingPage, HTTP 409 on conflicts
+- **Product auto-consumption during sessions** — service_products linking table, consumeStock on payment
+- **Reward redemption (points spending)** — rewards + redemptions tables, catalog + redeem UI on MemberPointsPage
+- **Analytics CSV/PDF export** — Client-side exportAnalytics utility with both formats
+- **Per-staff commission rate overrides** — commission_rate column on staffs, checked by Commission model
+- **Loyalty auto-earn from spending** — Points awarded on session payment via Member::adjustPoints()
+- **Admin/Staff profile page** — Editable profile at /admin/profile with image upload
+- **Activity log display UI** — /admin/activity-logs route and page existing
+
+### 13.5 Tech Debt
 
 - [ ] Consolidate migrations 029/030/031/032 into one
 - [ ] Drop legacy `staff` table

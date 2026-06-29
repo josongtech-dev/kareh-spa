@@ -29,6 +29,12 @@ class CommissionController extends BaseController {
         $id = isset($_GET['id']) ? intval($_GET['id']) : null;
         $action = isset($_GET['action']) ? $_GET['action'] : '';
 
+        if ($id === null || $action === '') {
+            $body = $this->getBody();
+            if ($id === null && isset($body['id'])) $id = intval($body['id']);
+            if ($action === '' && isset($body['action'])) $action = trim((string)$body['action']);
+        }
+
         switch ($method) {
             case 'GET':
                 if ($action === 'summary') {
@@ -127,8 +133,7 @@ class CommissionController extends BaseController {
     }
 
     private function createCommission() {
-        $data = json_decode(file_get_contents("php://input"), true);
-        if (!$data) $data = $_POST;
+        $data = $this->getBody();
 
         if (empty($data['staff_id']) || empty($data['amount'])) {
             Response::error('Staff ID and Amount are required', 400);
@@ -143,7 +148,7 @@ class CommissionController extends BaseController {
     }
 
     private function updateStatus($id) {
-        $data = json_decode(file_get_contents("php://input"), true);
+        $data = $this->getBody();
         $status = $data['status'] ?? 'Paid';
         $meta = $this->validateSettlementMeta($data, $status);
 
@@ -162,8 +167,7 @@ class CommissionController extends BaseController {
     }
 
     private function settleStaff($staffId) {
-        $data = json_decode(file_get_contents("php://input"), true);
-        if (!$data) $data = $_POST;
+        $data = $this->getBody();
         $month = isset($data['month']) ? trim((string)$data['month']) : '';
         if (!preg_match('/^\d{4}-\d{2}$/', $month)) {
             Response::error('Valid month (YYYY-MM) is required', 400);

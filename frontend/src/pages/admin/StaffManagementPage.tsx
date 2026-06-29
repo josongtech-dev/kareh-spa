@@ -55,7 +55,8 @@ const StaffManagementPage = () => {
     email: '',
     idNumber: '',
     additionalInfo: '',
-    status: 'Active'
+    status: 'Active',
+    commissionRate: '',
   });
 
   // DB Staff Data
@@ -182,7 +183,8 @@ const StaffManagementPage = () => {
       email: staff.email || '',
       idNumber: staff.id_number || '',
       additionalInfo: staff.additional_info || '',
-      status: staff.status || 'Active'
+      status: staff.status || 'Active',
+      commissionRate: staff.commission_rate != null ? String(staff.commission_rate) : '',
     });
     setIsEditModalOpen(true);
   };
@@ -217,6 +219,7 @@ const StaffManagementPage = () => {
       form.append('idNumber', editFormData.idNumber);
       form.append('status', editFormData.status);
       form.append('additionalInfo', editFormData.additionalInfo);
+      form.append('commissionRate', editFormData.commissionRate);
 
       const fileInput = document.getElementById('editImageUpload') as HTMLInputElement;
       if (fileInput?.files?.[0]) {
@@ -869,6 +872,10 @@ const StaffManagementPage = () => {
               <div className="col-md-6">
                 <label className="form-label small">Skill</label>
                 <input type="text" name="skill" className="form-control glass-input-simple" value={editFormData.skill} onChange={handleEditChange} required />
+              </div>
+              <div className="col-md-6">
+                <label className="form-label small">Commission Rate (%)</label>
+                <input type="number" name="commissionRate" className="form-control glass-input-simple" value={editFormData.commissionRate} onChange={handleEditChange} min="0" max="100" step="0.01" placeholder="Auto from service rule" />
               </div>
               <div className="col-12">
                 <label className="form-label small">Additional Info</label>

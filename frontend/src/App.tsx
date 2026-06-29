@@ -47,6 +47,8 @@ const UserLoginPage = lazy(() => import('./pages/UserLoginPage'));
 const RegisterPage = lazy(() => import('./pages/RegisterPage'));
 const AdminResetPasswordPage = lazy(() => import('./pages/admin/AdminResetPasswordPage'));
 const ActivityLogsPage = lazy(() => import('./pages/admin/ActivityLogsPage'));
+const RewardsManagementPage = lazy(() => import('./pages/admin/RewardsManagementPage'));
+const ProfilePage = lazy(() => import('./pages/admin/ProfilePage'));
 const PaymentCallbackPage = lazy(() => import('./pages/PaymentCallbackPage'));
 const MemberOffersPage = lazy(() => import('./pages/member/MemberOffersPage'));
 const MemberServicesPage = lazy(() => import('./pages/member/MemberServicesPage'));
@@ -72,13 +74,13 @@ const AddAdminProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ child
   return canCreateAdmin(getCurrentAdminRole()) ? <>{children}</> : <Navigate to="/admin/dashboard" replace />;
 };
 
-const RoleProtectedRoute: React.FC<{ children: React.ReactNode; canAccess: boolean }> = ({ children, canAccess }) => {
+const RoleProtectedRoute: React.FC<{ children: React.ReactNode; check: () => boolean }> = ({ children, check }) => {
   const adminToken = localStorage.getItem('admin_token');
   const adminUser = getParsedStorage('admin_user');
   if (!adminToken || !adminUser) {
     return <Navigate to="/admin/login" replace />;
   }
-  return canAccess ? <>{children}</> : <Navigate to="/admin/dashboard" replace />;
+  return check() ? <>{children}</> : <Navigate to="/admin/dashboard" replace />;
 };
 
 function App() {
@@ -98,33 +100,35 @@ function App() {
           <Route path="/admin/bookings" element={<AdminProtectedRoute><AppointmentsManagementPage /></AdminProtectedRoute>} />
           <Route
             path="/admin/members"
-            element={<RoleProtectedRoute canAccess={!isAttendant(getCurrentAdminRole())}><MembersManagementPage /></RoleProtectedRoute>}
+            element={<RoleProtectedRoute check={() => !isAttendant(getCurrentAdminRole())}><MembersManagementPage /></RoleProtectedRoute>}
           />
           <Route path="/admin/sessions" element={<AdminProtectedRoute><SessionsManagementPage /></AdminProtectedRoute>} />
           <Route
             path="/admin/commissions"
-            element={<RoleProtectedRoute canAccess={canSeeCommissions(getCurrentAdminRole())}><CommissionsManagementPage /></RoleProtectedRoute>}
+            element={<RoleProtectedRoute check={() => canSeeCommissions(getCurrentAdminRole())}><CommissionsManagementPage /></RoleProtectedRoute>}
           />
           <Route
             path="/admin/analytics"
-            element={<RoleProtectedRoute canAccess={canSeeAnalytics(getCurrentAdminRole())}><AnalyticsPage /></RoleProtectedRoute>}
+            element={<RoleProtectedRoute check={() => canSeeAnalytics(getCurrentAdminRole())}><AnalyticsPage /></RoleProtectedRoute>}
           />
           <Route path="/admin/feedback" element={<AdminProtectedRoute><FeedbackManagementPage /></AdminProtectedRoute>} />
           <Route
             path="/admin/expenses"
             element={
-              <RoleProtectedRoute canAccess={canAccessExpenses(getCurrentAdminRole())}>
+              <RoleProtectedRoute check={() => canAccessExpenses(getCurrentAdminRole())}>
                 <ExpensesManagementPage />
               </RoleProtectedRoute>
             }
           />
           <Route
             path="/admin/offers"
-            element={<RoleProtectedRoute canAccess={canManageOffers(getCurrentAdminRole())}><OffersManagementPage /></RoleProtectedRoute>}
+            element={<RoleProtectedRoute check={() => canManageOffers(getCurrentAdminRole())}><OffersManagementPage /></RoleProtectedRoute>}
           />
           <Route path="/admin/inhouse-requests" element={<AdminProtectedRoute><InhouseRequestsManagementPage /></AdminProtectedRoute>} />
           <Route path="/admin/settings" element={<AdminProtectedRoute><SettingsPage /></AdminProtectedRoute>} />
           <Route path="/admin/activity-logs" element={<AdminProtectedRoute><ActivityLogsPage /></AdminProtectedRoute>} />
+          <Route path="/admin/rewards" element={<AdminProtectedRoute><RewardsManagementPage /></AdminProtectedRoute>} />
+          <Route path="/admin/profile" element={<AdminProtectedRoute><ProfilePage /></AdminProtectedRoute>} />
 
           {/* Payment Callback */}
           <Route path="/payment/callback" element={<PaymentCallbackPage />} />

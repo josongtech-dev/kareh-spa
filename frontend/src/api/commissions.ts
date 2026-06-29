@@ -44,6 +44,6 @@ export const commissionApi = {
     return api.get(`/commissions.php?id=${staffId}&action=details${buildRangeQuery(month, startDate, endDate)}${ps}${sb}${pf}`);
   },
   create: (data: any) => api.post('/commissions.php', data),
-  updateStatus: (id: number, status: string) => api.post(`/commissions.php?id=${id}&action=update_status`, { status }),
-  settleStaff: (staffId: number, payload: any) => api.post(`/commissions.php?id=${staffId}&action=settle_staff`, payload),
+  updateStatus: (id: number, status: string) => api.post('/commissions.php', { id, action: 'update_status', status }),
+  settleStaff: (staffId: number, payload: any) => api.post('/commissions.php', { id: staffId, action: 'settle_staff', ...payload }),
 };
